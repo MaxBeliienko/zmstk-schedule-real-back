@@ -1,34 +1,135 @@
 const express = require("express");
 const router = express.Router();
 
+const authMiddleware = require("../middlewares/authMiddleware");
+
 const Student = require("../models/Student");
 const ExerciseCategory = require("../models/Exercise");
 const PlannedSchedule = require("../models/PlannedSchedule");
 const Vehicle = require("../models/Vehicle");
+
+function getStudentStatus(startDateStr, endDateStr, targetDate = new Date()) {
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  const target = new Date(targetDate);
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+  target.setHours(12, 0, 0, 0);
+
+  const maxInactiveDate = new Date(end);
+  maxInactiveDate.setMonth(maxInactiveDate.getMonth() + 6);
+
+  if (target >= start && target <= end) {
+    return "Активний";
+  } else if (target > end && target <= maxInactiveDate) {
+    return "Неактивний";
+  } else {
+    return "Архів";
+  }
+}
 
 // ================= КУРСАНТИ =================
 
 // Отримати всіх курсантів
 router.get("/students", async (req, res) => {
   try {
-    const students = await Student.find({}).sort({ group: 1, fullName: 1 });
-    res.status(200).json({ success: true, students });
+    const { includeArchive, search } = req.query;
+    const today = new Date();
+
+    let query = {};
+    if (search) {
+      query.$or = [
+        { fullName: { $regex: search, $options: "i" } },
+        { group: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const students = await Student.find(query).sort({ fullName: 1 }).lean();
+
+    // Розраховуємо статус та фільтруємо
+    const processedStudents = students
+      .map((s) => ({
+        ...s,
+        status: getStudentStatus(s.startDate, s.endDate, today),
+      }))
+      .filter((s) => {
+        if (includeArchive === "true") return true; // Пошук усіх (включаючи Архів)
+        return s.status !== "Архів"; // За замовчуванням тільки Активні та Неактивні
+      });
+
+    // Сортування: Активні -> Неактивні -> Архів (всередині за ПІБ)
+    const statusPriority = { Активний: 1, Неактивний: 2, Архів: 3 };
+    processedStudents.sort((a, b) => {
+      if (statusPriority[a.status] !== statusPriority[b.status]) {
+        return statusPriority[a.status] - statusPriority[b.status];
+      }
+      return a.fullName.localeCompare(b.fullName, "uk");
+    });
+
+    res.status(200).json({
+      success: true,
+      students: processedStudents,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// Додати нового курсанта
-router.post("/students", async (req, res) => {
+// Створення курсанта
+router.post("/students", authMiddleware, async (req, res) => {
   try {
-    const { fullName, group, category, startDate, endDate } = req.body;
+    const {
+      fullName,
+      group,
+      category,
+      startDate,
+      endDate,
+      isPreparation,
+      studyType,
+      cost,
+      prepayment,
+      comment,
+    } = req.body;
+
+    // Визначаємо роль із розшифрованого JWT-токена
+    const currentUserRole =
+      req.user?.role === "accountant" ? "Accountant" : "Admin";
+
+    const prepVal = Number(prepayment) || 0;
+    const costVal = Number(cost) || 0;
+
+    if (prepVal > costVal) {
+      return res.status(400).json({
+        success: false,
+        message: "Передплата не може бути більшою за загальну вартість!",
+      });
+    }
+
+    const prepaymentHistory = [];
+    if (prepVal > 0) {
+      prepaymentHistory.push({
+        amount: prepVal,
+        delta: prepVal,
+        role: currentUserRole, // 👈 Автоматично з JWT
+        createdAt: new Date(),
+      });
+    }
+
     const student = new Student({
       fullName,
       group,
       category,
       startDate,
       endDate,
+      isPreparation: Boolean(isPreparation),
+      studyType,
+      cost: costVal,
+      prepayment: prepVal,
+      prepaymentHistory,
+      comment: comment || "",
     });
+
     await student.save();
     res.status(201).json({ success: true, student });
   } catch (error) {
@@ -36,32 +137,26 @@ router.post("/students", async (req, res) => {
   }
 });
 
-router.delete("/students/:id", async (req, res) => {
+// Редагування курсанта
+router.put("/students/:id", authMiddleware, async (req, res) => {
   try {
-    const deletedStudent = await Student.findByIdAndDelete(req.params.id);
-    if (!deletedStudent) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Студента не знайдено" });
-    }
+    const {
+      fullName,
+      group,
+      category,
+      startDate,
+      endDate,
+      isPreparation,
+      studyType,
+      cost,
+      prepayment,
+      comment,
+    } = req.body;
 
-    // За бажанням: також можна видалити всі заплановані заняття даного студента
-    await PlannedSchedule.deleteMany({ studentId: req.params.id });
+    // 1. Отримуємо роль з авторизованого користувача (з токена)
+    const currentUserRole =
+      req.user?.role === "accountant" ? "Accountant" : "Admin";
 
-    res
-      .status(200)
-      .json({ success: true, message: "Студента успішно видалено" });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Редагувати курсанта
-router.put("/students/:id", async (req, res) => {
-  try {
-    const { fullName, group, category, startDate, endDate } = req.body;
-
-    // 1. Отримуємо поточний стан курсанта
     const existingStudent = await Student.findById(req.params.id);
     if (!existingStudent) {
       return res
@@ -69,30 +164,82 @@ router.put("/students/:id", async (req, res) => {
         .json({ success: false, message: "Студента не знайдено" });
     }
 
-    // 2. Якщо категорія змінюється, перевіряємо наявність занять у графіку
-    if (existingStudent.category !== category) {
-      const activeSchedulesCount = await PlannedSchedule.countDocuments({
-        studentId: req.params.id,
-      });
+    const newPrep = Number(prepayment) || 0;
+    const newCost = Number(cost) || 0;
 
-      if (activeSchedulesCount > 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Неможливо змінити категорію з ${existingStudent.category} на ${category}! У курсанта вже є ${activeSchedulesCount} занять у графіку. Спочатку видаліть їх.`,
-        });
-      }
+    if (newPrep > newCost) {
+      return res.status(400).json({
+        success: false,
+        message: "Передплата не може бути більшою за загальну вартість!",
+      });
     }
 
-    // 3. Якщо занять немає або категорія не змінювалася — оновлюємо
-    const updatedStudent = await Student.findByIdAndUpdate(
-      req.params.id,
-      { fullName, group, category, startDate, endDate },
-      { new: true, runValidators: true }
-    );
+    const history = existingStudent.prepaymentHistory || [];
+    const oldPrep = existingStudent.prepayment || 0;
 
-    res.status(200).json({ success: true, student: updatedStudent });
+    // 2. Записуємо історію з ПРАВИЛЬНОЮ роллю
+    if (newPrep !== oldPrep) {
+      history.push({
+        amount: newPrep,
+        delta: newPrep - oldPrep,
+        role: currentUserRole, // 👈 Беремо роль з токена
+        createdAt: new Date(),
+      });
+    }
+
+    // 3. Якщо це Бухгалтер — оновлюємо ТІЛЬКИ фінансові поля та коментар
+    if (req.user?.role === "accountant") {
+      existingStudent.cost = newCost;
+      existingStudent.prepayment = newPrep;
+      existingStudent.prepaymentHistory = history;
+      if (comment !== undefined) existingStudent.comment = comment;
+    } else {
+      // Якщо це Головний Адмін — оновлюємо всі поля
+      existingStudent.fullName = fullName;
+      existingStudent.group = group;
+      existingStudent.category = category;
+      existingStudent.startDate = startDate;
+      existingStudent.endDate = endDate;
+      existingStudent.isPreparation = Boolean(isPreparation);
+      existingStudent.studyType = studyType;
+      existingStudent.cost = newCost;
+      existingStudent.prepayment = newPrep;
+      existingStudent.prepaymentHistory = history;
+      existingStudent.comment = comment || "";
+    }
+
+    await existingStudent.save();
+    res.status(200).json({ success: true, student: existingStudent });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+router.delete("/students/:id", authMiddleware, async (req, res) => {
+  try {
+    // Додаткова перевірка: Бухгалтер не має права видаляти
+    if (req.user?.role === "accountant") {
+      return res.status(403).json({
+        success: false,
+        message: "Бухгалтер не має прав для видалення курсантів",
+      });
+    }
+
+    const deletedStudent = await Student.findByIdAndDelete(req.params.id);
+    if (!deletedStudent) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Студента не знайдено" });
+    }
+
+    // Також видаляємо всі заплановані заняття даного студента
+    await PlannedSchedule.deleteMany({ studentId: req.params.id });
+
+    res
+      .status(200)
+      .json({ success: true, message: "Студента успішно видалено" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -286,10 +433,17 @@ router.delete("/planned-schedule/:id", async (req, res) => {
   }
 });
 
-// GET: Отримати вільних курсантів та транспортні засоби на обрану дату та час
+// GET: Доступні ресурси для графіка
 router.get("/planned-schedule/available-resources", async (req, res) => {
   try {
-    const { date, startTime, endTime, category, currentScheduleId } = req.query;
+    const {
+      date,
+      startTime,
+      endTime,
+      category,
+      currentScheduleId,
+      includeArchive,
+    } = req.query;
 
     if (!date || !startTime || !endTime) {
       return res.status(400).json({
@@ -298,26 +452,18 @@ router.get("/planned-schedule/available-resources", async (req, res) => {
       });
     }
 
-    // 1. Знаходимо ВСІ заняття по всіх інструкторах на цю дату
+    // 1. Отримуємо зайняті слоти
     const daySchedules = await PlannedSchedule.find({ date });
-
-    // 2. Збираємо ID студентів та ТЗ, які перетинаються за часом
     const occupiedStudentIds = new Set();
     const occupiedVehicleIds = new Set();
 
-    // Очищаємо ID від можливих пробілів
     const cleanCurrentId = currentScheduleId ? currentScheduleId.trim() : null;
 
     daySchedules.forEach((slot) => {
-      // Ігноруємо поточний запис, якщо ми його редагуємо
-      if (cleanCurrentId && slot._id.toString() === cleanCurrentId) {
-        return;
-      }
+      if (cleanCurrentId && slot._id.toString() === cleanCurrentId) return;
 
-      // Перевірка перетину інтервалів часу: (StartA < EndB) && (StartB < EndA)
       const isOverlapping =
         startTime < slot.endTime && slot.startTime < endTime;
-
       if (isOverlapping) {
         if (slot.studentId) occupiedStudentIds.add(slot.studentId.toString());
         if (slot.vehicleId) occupiedVehicleIds.add(slot.vehicleId.toString());
@@ -325,25 +471,37 @@ router.get("/planned-schedule/available-resources", async (req, res) => {
       }
     });
 
-    // 3. Шукаємо СТУДЕНТІВ необхідної категорії, які НЕ в переходять у список зайнятих
+    // 2. Фільтр студентів: Включаємо ТІЛЬКИ напрямок "Практика"
     const studentFilter = {
       _id: { $nin: Array.from(occupiedStudentIds) },
+      studyType: "Практика",
     };
-    if (category) {
-      studentFilter.category = category;
-    }
+    if (category) studentFilter.category = category;
 
-    const availableStudents = await Student.find(studentFilter).sort({
-      fullName: 1,
+    const candidateStudents = await Student.find(studentFilter).lean();
+
+    // 3. Розрахунок статусу та сортування
+    const availableStudents = candidateStudents
+      .map((student) => ({
+        ...student,
+        status: getStudentStatus(student.startDate, student.endDate, date),
+      }))
+      .filter((student) => {
+        if (includeArchive === "true") return true;
+        return student.status !== "Архів";
+      });
+
+    const statusPriority = { Активний: 1, Неактивний: 2, Архів: 3 };
+    availableStudents.sort((a, b) => {
+      if (statusPriority[a.status] !== statusPriority[b.status]) {
+        return statusPriority[a.status] - statusPriority[b.status];
+      }
+      return a.fullName.localeCompare(b.fullName, "uk");
     });
 
-    // 4. Шукаємо ТЗ необхідної категорії, які НЕ в переходять у список зайнятих
-    const vehicleFilter = {
-      _id: { $nin: Array.from(occupiedVehicleIds) },
-    };
-    if (category) {
-      vehicleFilter.category = { $in: [category] };
-    }
+    // 4. Вільні авто
+    const vehicleFilter = { _id: { $nin: Array.from(occupiedVehicleIds) } };
+    if (category) vehicleFilter.category = { $in: [category] };
 
     const availableVehicles = await Vehicle.find(vehicleFilter);
 
@@ -353,7 +511,6 @@ router.get("/planned-schedule/available-resources", async (req, res) => {
       vehicles: availableVehicles,
     });
   } catch (error) {
-    console.error("Error fetching available resources:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -371,12 +528,11 @@ router.get("/students/:id/details", async (req, res) => {
         .json({ success: false, message: "Курсанта не знайдено" });
     }
 
-    // 2. Отримуємо категорію вправ за категорією студента (наприклад, "B")
+    // 2. Отримуємо категорію вправ за категорією студента
     const exerciseCategory = await ExerciseCategory.findOne({
       category: student.category,
     });
 
-    // 🔑 Використовуємо поле `exercises` з вашої схеми
     const exerciseList =
       exerciseCategory && Array.isArray(exerciseCategory.exercises)
         ? exerciseCategory.exercises
@@ -388,14 +544,12 @@ router.get("/students/:id/details", async (req, res) => {
       .populate("vehicleId", "brand plateNumber")
       .sort({ date: 1, startTime: 1 });
 
-    // 4. Групуємо заняття за кодом вправи (exerciseCode)
+    // 4. Групуємо заняття за кодом вправи
     const exerciseDetails = exerciseList.map((ex) => {
-      // Знаходимо всі записи за цим кодом вправи (наприклад, "1.1", "6.4")
       const records = studentSchedules.filter(
         (sch) => sch.exerciseCode === ex.code
       );
 
-      // Рахуємо сумарно пройдені години
       const completedHours = records.reduce(
         (sum, item) => sum + (item.hours || 0),
         0
