@@ -531,6 +531,7 @@ router.get("/students/:id/details", async (req, res) => {
     // 2. Отримуємо категорію вправ за категорією студента
     const exerciseCategory = await ExerciseCategory.findOne({
       category: student.category,
+      isPreparation: Boolean(student.isPreparation),
     });
 
     const exerciseList =

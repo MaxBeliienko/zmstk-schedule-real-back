@@ -7,9 +7,15 @@ const exerciseItemSchema = new mongoose.Schema({
 });
 
 const exerciseCategorySchema = new mongoose.Schema({
-  category: { type: String, required: true, unique: true },
+  category: { type: String, required: true },
+  isPreparation: { type: Boolean, default: false, required: true },
   exercises: [exerciseItemSchema],
   totalHours: { type: Number, required: true },
 });
+
+exerciseCategorySchema.index(
+  { category: 1, isPreparation: 1 },
+  { unique: true }
+);
 
 module.exports = mongoose.model("ExerciseCategory", exerciseCategorySchema);
