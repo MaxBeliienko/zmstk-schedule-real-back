@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const Schedule = require("../models/Schedule");
+const Instructor = require("../models/Instructor");
 
 router.get("/instructor-day", async (req, res) => {
   const { date, instructorId } = req.query;
@@ -28,6 +29,15 @@ router.get("/instructor-day", async (req, res) => {
   ];
 
   try {
+    // 1. Знаходимо інструктора в базі, щоб отримати його ПІБ та категорії (атестацію)
+    const instructor = await Instructor.findById(instructorId).lean();
+    if (!instructor) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Інструктора не знайдено" });
+    }
+
+    // 2. Отримуємо розклад за день
     const records = await Schedule.find({ date, instructorId });
     const fullGrid = timeSlots.map((slot) => {
       const match = records.find((r) => r.timeSlot === slot);
@@ -38,7 +48,17 @@ router.get("/instructor-day", async (req, res) => {
         studentName: match ? match.studentName : "",
       };
     });
-    res.status(200).json({ success: true, slots: fullGrid });
+
+    // 3. Повертаємо і графік, і дані інструктора (включаючи категорії)
+    res.status(200).json({
+      success: true,
+      slots: fullGrid,
+      instructor: {
+        id: instructor._id,
+        fullName: instructor.fullName,
+        certificate: instructor.certificate || [],
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

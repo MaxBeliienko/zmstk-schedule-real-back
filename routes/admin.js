@@ -9,24 +9,42 @@ const PlannedSchedule = require("../models/PlannedSchedule");
 const Vehicle = require("../models/Vehicle");
 
 function getStudentStatus(startDateStr, endDateStr, targetDate = new Date()) {
-  const start = new Date(startDateStr);
-  const end = new Date(endDateStr);
-  const target = new Date(targetDate);
+  // Допоміжна функція для конвертації дати у Unix-секунди (з обнуленням годин до початку доби)
+  const toUnixDayStart = (dateInput) => {
+    if (!dateInput) return 0;
+    const d = new Date(dateInput);
+    // Встановлюємо годину, хвилину, секунду на 00:00:00 за UTC
+    // або просто обнуляємо локальний час:
+    d.setHours(0, 0, 0, 0);
+    return Math.floor(d.getTime() / 1000); // Повертаємо секунди замість мілісекунд
+  };
 
-  start.setHours(0, 0, 0, 0);
-  end.setHours(23, 59, 59, 999);
-  target.setHours(12, 0, 0, 0);
+  const startSec = toUnixDayStart(startDateStr);
+  const endSec = toUnixDayStart(endDateStr);
+  const targetSec = toUnixDayStart(targetDate);
 
-  const maxInactiveDate = new Date(end);
-  maxInactiveDate.setMonth(maxInactiveDate.getMonth() + 6);
-
-  if (target >= start && target <= end) {
-    return "Активний";
-  } else if (target > end && target <= maxInactiveDate) {
-    return "Неактивний";
-  } else {
-    return "Архів";
+  // 1. Якщо навчання ще не почалося
+  if (targetSec < startSec) {
+    return "Очікує";
   }
+
+  // 2. Якщо поточна дата в межах навчання
+  if (targetSec >= startSec && targetSec <= endSec) {
+    return "Активний";
+  }
+
+  // 3. Розраховуємо дату (endDate + 6 місяців) у секундах
+  const endDateObj = new Date(endDateStr);
+  endDateObj.setMonth(endDateObj.getMonth() + 6);
+  const maxInactiveSec = toUnixDayStart(endDateObj);
+
+  // 4. Якщо після endDate, але не пізніше ніж через 6 місяців -> Неактивний
+  if (targetSec > endSec && targetSec <= maxInactiveSec) {
+    return "Неактивний";
+  }
+
+  // 5. Якщо минуло більше ніж 6 місяців -> Архів
+  return "Архів";
 }
 
 // ================= КУРСАНТИ =================
