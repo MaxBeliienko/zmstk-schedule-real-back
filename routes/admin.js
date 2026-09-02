@@ -47,6 +47,11 @@ function getStudentStatus(startDateStr, endDateStr, targetDate = new Date()) {
   return "Архів";
 }
 
+const parseMoney = (value) => {
+  const parsed = parseFloat(value);
+  if (isNaN(parsed) || parsed < 0) return 0;
+  return Math.round(parsed * 100) / 100;
+};
 // ================= КУРСАНТИ =================
 
 // Отримати всіх курсантів
@@ -114,8 +119,9 @@ router.post("/students", authMiddleware, async (req, res) => {
     const currentUserRole =
       req.user?.role === "accountant" ? "Accountant" : "Admin";
 
-    const prepVal = Number(prepayment) || 0;
-    const costVal = Number(cost) || 0;
+    // 🌟 БЕЗПЕЧНИЙ ПАРСИНГ КОПІЙОК
+    const costVal = parseMoney(cost);
+    const prepVal = parseMoney(prepayment);
 
     if (prepVal > costVal) {
       return res.status(400).json({
@@ -129,7 +135,7 @@ router.post("/students", authMiddleware, async (req, res) => {
       prepaymentHistory.push({
         amount: prepVal,
         delta: prepVal,
-        role: currentUserRole, // 👈 Автоматично з JWT
+        role: currentUserRole,
         createdAt: new Date(),
       });
     }
@@ -182,8 +188,9 @@ router.put("/students/:id", authMiddleware, async (req, res) => {
         .json({ success: false, message: "Студента не знайдено" });
     }
 
-    const newPrep = Number(prepayment) || 0;
-    const newCost = Number(cost) || 0;
+    // 🌟 БЕЗПЕЧНИЙ ПАРСИНГ КОПІЙОК
+    const newCost = parseMoney(cost);
+    const newPrep = parseMoney(prepayment);
 
     if (newPrep > newCost) {
       return res.status(400).json({
@@ -193,14 +200,17 @@ router.put("/students/:id", authMiddleware, async (req, res) => {
     }
 
     const history = existingStudent.prepaymentHistory || [];
-    const oldPrep = existingStudent.prepayment || 0;
+    const oldPrep = parseMoney(existingStudent.prepayment || 0);
+
+    // 🌟 ТОЧНИЙ РОЗРАХУНОК РІЗНИЦІ (без багів IEEE 754)
+    const delta = Math.round((newPrep - oldPrep) * 100) / 100;
 
     // 2. Записуємо історію з ПРАВИЛЬНОЮ роллю
-    if (newPrep !== oldPrep) {
+    if (delta !== 0) {
       history.push({
         amount: newPrep,
-        delta: newPrep - oldPrep,
-        role: currentUserRole, // 👈 Беремо роль з токена
+        delta: delta,
+        role: currentUserRole,
         createdAt: new Date(),
       });
     }
