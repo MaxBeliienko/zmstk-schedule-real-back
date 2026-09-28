@@ -35,4 +35,10 @@ const plannedScheduleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+plannedScheduleSchema.index(
+  { studentId: 1, exerciseCode: 1 },
+  { unique: true }
+);
+plannedScheduleSchema.index({ date: 1, instructorId: 1 });
+
 module.exports = mongoose.model("PlannedSchedule", plannedScheduleSchema);

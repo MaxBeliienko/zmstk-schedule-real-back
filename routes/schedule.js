@@ -1,190 +1,271 @@
 const express = require("express");
-const router = express.Router();
 const Schedule = require("../models/Schedule");
 const Instructor = require("../models/Instructor");
+const authMiddleware = require("../middlewares/authMiddleware");
+const requireRole = require("../middlewares/requireRole");
+const {
+  REAL_TIME_SLOTS,
+  INSTRUCTOR_EDIT_DAYS_BACK,
+  MAX_GRID_RANGE_DAYS,
+} = require("../config/timeSlots");
+const {
+  todayKyiv,
+  addDays,
+  isValidDateStr,
+  dateRangeError,
+} = require("../utils/dates");
+const { withLock } = require("../utils/keyedLock");
+const {
+  asyncHandler,
+  badRequest,
+  forbidden,
+  notFound,
+  conflict,
+  isObjectId,
+  asString,
+} = require("../utils/http");
 
-router.get("/instructor-day", async (req, res) => {
-  const { date, instructorId } = req.query;
-  if (!date || !instructorId) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Не вказано дату або ID інструктора" });
+const router = express.Router();
+
+router.use(authMiddleware);
+
+// Нормалізує ПІБ для порівняння (регістр і зайві пробіли не мають значення)
+const normalizeName = (name) =>
+  name.trim().replace(/\s+/g, " ").toLocaleLowerCase("uk");
+
+// Інструктор працює лише зі своїм графіком; адмін/бухгалтер — з будь-яким
+function assertCanAccessInstructor(user, instructorId) {
+  if (user.role === "instructor" && user.id !== instructorId) {
+    throw forbidden("Можна працювати лише з власним графіком");
   }
+}
 
-  const timeSlots = [
-    "07:00-08:00",
-    "08:00-09:00",
-    "09:00-10:00",
-    "10:00-11:00",
-    "11:00-12:00",
-    "12:00-13:00",
-    "13:00-14:00",
-    "14:00-15:00",
-    "15:00-16:00",
-    "16:00-17:00",
-    "17:00-18:00",
-    "18:00-19:00",
-    "19:00-20:00",
-    "20:00-21:00",
-  ];
-
-  try {
-    // 1. Знаходимо інструктора в базі, щоб отримати його ПІБ та категорії (атестацію)
-    const instructor = await Instructor.findById(instructorId).lean();
-    if (!instructor) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Інструктора не знайдено" });
+// Графік одного інструктора на день (повна сітка слотів)
+router.get(
+  "/instructor-day",
+  requireRole("instructor", "admin", "accountant"),
+  asyncHandler(async (req, res) => {
+    const date = asString(req.query.date);
+    const instructorId = asString(req.query.instructorId);
+    if (!isValidDateStr(date) || !isObjectId(instructorId)) {
+      throw badRequest("Не вказано дату або ID інструктора");
     }
+    assertCanAccessInstructor(req.user, instructorId);
 
-    // 2. Отримуємо розклад за день
-    const records = await Schedule.find({ date, instructorId });
-    const fullGrid = timeSlots.map((slot) => {
-      const match = records.find((r) => r.timeSlot === slot);
+    const instructor = await Instructor.findById(instructorId)
+      .select("fullName certificate")
+      .lean();
+    if (!instructor) throw notFound("Інструктора не знайдено");
+
+    const records = await Schedule.find({ date, instructorId }).lean();
+    const bySlot = new Map(records.map((r) => [r.timeSlot, r]));
+
+    const slots = REAL_TIME_SLOTS.map((timeSlot) => {
+      const match = bySlot.get(timeSlot);
       return {
-        timeSlot: slot,
-        vehicleId: match ? match.vehicleId : null,
-        location: match ? match.location : "",
-        studentName: match ? match.studentName : "",
+        timeSlot,
+        vehicleId: match?.vehicleId ?? null,
+        location: match?.location ?? "",
+        studentName: match?.studentName ?? "",
+        isGarage: Boolean(match?.isGarage),
       };
     });
 
-    // 3. Повертаємо і графік, і дані інструктора (включаючи категорії)
     res.status(200).json({
       success: true,
-      slots: fullGrid,
+      slots,
       instructor: {
         id: instructor._id,
         fullName: instructor.fullName,
         certificate: instructor.certificate || [],
       },
     });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+  })
+);
 
-router.get("/admin-day", async (req, res) => {
-  const { date } = req.query;
-  if (!date)
-    return res.status(400).json({ success: false, message: "Вкажіть дату" });
-  try {
+// Зведений день по всіх інструкторах
+router.get(
+  "/admin-day",
+  requireRole.staff,
+  asyncHandler(async (req, res) => {
+    const date = asString(req.query.date);
+    if (!isValidDateStr(date)) throw badRequest("Вкажіть дату");
+
     const schedules = await Schedule.find({ date })
       .populate("instructorId", "fullName")
-      .populate("vehicleId");
+      .populate("vehicleId", "brand plateNumber")
+      .lean();
     res.status(200).json({ success: true, schedules });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+  })
+);
+
+// Графік одного інструктора за період
+router.get(
+  "/admin-instructor-period",
+  requireRole.staff,
+  asyncHandler(async (req, res) => {
+    const instructorId = asString(req.query.instructorId);
+    const startDate = asString(req.query.startDate);
+    const endDate = asString(req.query.endDate);
+
+    if (!isObjectId(instructorId)) throw badRequest("Некоректний ID інструктора");
+    const rangeError = dateRangeError(startDate, endDate, MAX_GRID_RANGE_DAYS);
+    if (rangeError) throw badRequest(rangeError);
+
+    const schedules = await Schedule.find({
+      instructorId,
+      date: { $gte: startDate, $lte: endDate },
+    })
+      .populate("vehicleId", "brand plateNumber")
+      .lean();
+
+    res.status(200).json({ success: true, schedules });
+  })
+);
+
+// Перетворює слот із запиту на нормалізований вигляд (або кидає 400)
+function normalizeSlot(raw) {
+  const timeSlot = asString(raw?.timeSlot);
+  if (!REAL_TIME_SLOTS.includes(timeSlot)) {
+    throw badRequest(`Некоректний часовий слот: ${timeSlot}`);
   }
-});
 
-router.post("/save", async (req, res) => {
-  const { date, instructorId, slots } = req.body;
-  try {
-    const errors = [];
-    for (const slot of slots) {
-      const hasVehicle = slot.vehicleId && slot.vehicleId.trim() !== "";
-      const hasStudent = slot.studentName && slot.studentName.trim() !== "";
+  const isGarage = Boolean(raw.isGarage);
+  const vehicleRaw = asString(raw.vehicleId)?.trim() || "";
+  if (vehicleRaw && !isObjectId(vehicleRaw)) {
+    throw badRequest(`Некоректне ТЗ у слоті ${timeSlot}`);
+  }
 
-      if (!hasVehicle && !hasStudent) continue;
+  const studentName = isGarage
+    ? ""
+    : (asString(raw.studentName) || "").trim().replace(/\s+/g, " ").slice(0, 150);
+  const location = isGarage ? "" : (asString(raw.location) || "").slice(0, 100);
 
-      const query = {
-        date,
-        timeSlot: slot.timeSlot,
-        instructorId: { $ne: instructorId },
-      };
-      const orConditions = [];
-      if (hasVehicle) orConditions.push({ vehicleId: slot.vehicleId });
-      if (hasStudent)
-        orConditions.push({
-          studentName: {
-            $regex: new RegExp(`^${slot.studentName.trim()}$`, "i"),
-          },
-        });
-      query.$or = orConditions;
+  return {
+    timeSlot,
+    isGarage,
+    vehicleId: vehicleRaw || null,
+    studentName,
+    location,
+    isEmpty: !vehicleRaw && !studentName && !isGarage,
+  };
+}
 
-      const conflict = await Schedule.findOne(query)
-        .populate("instructorId", "fullName")
-        .populate("vehicleId");
+// Збереження графіка інструктора на день
+router.post(
+  "/save",
+  requireRole("instructor", "admin"),
+  asyncHandler(async (req, res) => {
+    const date = asString(req.body.date);
+    const instructorId = asString(req.body.instructorId);
+    const { slots } = req.body;
 
-      if (conflict) {
-        let message = "";
-        if (
-          hasVehicle &&
-          conflict.vehicleId &&
-          conflict.vehicleId._id.toString() === slot.vehicleId
-        ) {
-          message = `Автомобіль ${conflict.vehicleId.brand} (${conflict.vehicleId.plateNumber}) вже використовується інструктором ${conflict.instructorId.fullName}`;
-        } else if (
-          hasStudent &&
-          conflict.studentName.toLowerCase() ===
-            slot.studentName.trim().toLowerCase()
-        ) {
-          message = `Курсант "${slot.studentName}" у цей час вже записаний до інструктора ${conflict.instructorId.fullName}`;
-        }
-        errors.push({ timeSlot: slot.timeSlot, message });
-      }
+    if (!isValidDateStr(date) || !isObjectId(instructorId)) {
+      throw badRequest("Некоректна дата або ID інструктора");
     }
-
-    if (errors.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Виявлено конфлікти бронювання!",
-        errors,
-      });
+    if (!Array.isArray(slots) || slots.length > REAL_TIME_SLOTS.length) {
+      throw badRequest("Некоректний список слотів");
     }
+    assertCanAccessInstructor(req.user, instructorId);
 
-    for (const slot of slots) {
-      if (
-        (!slot.vehicleId || slot.vehicleId.trim() === "") &&
-        (!slot.studentName || slot.studentName.trim() === "")
-      ) {
-        await Schedule.findOneAndDelete({
-          date,
-          timeSlot: slot.timeSlot,
-          instructorId,
-        });
-      } else {
-        await Schedule.findOneAndUpdate(
-          { date, timeSlot: slot.timeSlot, instructorId },
-          {
-            vehicleId: slot.vehicleId || null,
-            location: slot.location || "",
-            studentName: slot.studentName.trim(),
-          },
-          { upsert: true }
+    // Та сама межа, що й у календарі кабінету: не раніше ніж позавчора
+    if (req.user.role === "instructor") {
+      const minDate = addDays(todayKyiv(), -INSTRUCTOR_EDIT_DAYS_BACK);
+      if (date < minDate) {
+        throw badRequest(
+          "Редагувати графік можна лише за останні 2 дні та на майбутнє"
         );
       }
     }
-    res
-      .status(200)
-      .json({ success: true, message: "Графік успішно збережено!" });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
-// Отримати графік ОДНОГО інструктора за ПЕРІОД дат
-router.get("/admin-instructor-period", async (req, res) => {
-  const { instructorId, startDate, endDate } = req.query;
+    const normalized = slots.map(normalizeSlot);
+    const timeSlots = normalized.map((s) => s.timeSlot);
+    if (new Set(timeSlots).size !== timeSlots.length) {
+      throw badRequest("Слоти в запиті повторюються");
+    }
 
-  if (!instructorId || !startDate || !endDate) {
-    return res.status(400).json({
-      success: false,
-      message: "Необхідно вказати ID інструктора, початкову та кінцеву дати.",
+    // Перевірка конфліктів і збереження — атомарно відносно інших
+    // збережень на цю ж дату (інакше два інструктори могли б одночасно
+    // забронювати одне авто)
+    await withLock(`real:${date}`, async () => {
+      const others = await Schedule.find({
+        date,
+        timeSlot: { $in: timeSlots },
+        instructorId: { $ne: instructorId },
+      })
+        .populate("instructorId", "fullName")
+        .populate("vehicleId", "brand plateNumber")
+        .lean();
+
+      const errors = [];
+      for (const slot of normalized) {
+        if (slot.isEmpty) continue;
+        const sameTime = others.filter((o) => o.timeSlot === slot.timeSlot);
+
+        const vehicleConflict =
+          slot.vehicleId &&
+          sameTime.find((o) => o.vehicleId?._id?.toString() === slot.vehicleId);
+        if (vehicleConflict) {
+          errors.push({
+            timeSlot: slot.timeSlot,
+            message: `Автомобіль ${vehicleConflict.vehicleId.brand} (${vehicleConflict.vehicleId.plateNumber}) вже використовується інструктором ${vehicleConflict.instructorId?.fullName || "—"}`,
+          });
+          continue;
+        }
+
+        if (slot.studentName) {
+          const target = normalizeName(slot.studentName);
+          const studentConflict = sameTime.find(
+            (o) => o.studentName && normalizeName(o.studentName) === target
+          );
+          if (studentConflict) {
+            errors.push({
+              timeSlot: slot.timeSlot,
+              message: `Курсант "${slot.studentName}" у цей час вже записаний до інструктора ${studentConflict.instructorId?.fullName || "—"}`,
+            });
+          }
+        }
+      }
+
+      if (errors.length > 0) {
+        throw badRequest("Виявлено конфлікти бронювання!", { errors });
+      }
+
+      const operations = normalized.map((slot) => {
+        const filter = { date, instructorId, timeSlot: slot.timeSlot };
+        if (slot.isEmpty) return { deleteOne: { filter } };
+        return {
+          updateOne: {
+            filter,
+            update: {
+              $set: {
+                vehicleId: slot.vehicleId,
+                location: slot.location,
+                studentName: slot.studentName,
+                isGarage: slot.isGarage,
+              },
+            },
+            upsert: true,
+          },
+        };
+      });
+
+      if (operations.length > 0) {
+        await Schedule.bulkWrite(operations).catch((err) => {
+          // Спрацював унікальний індекс "одне авто на слот" — паралельне
+          // збереження іншого інструктора встигло раніше
+          if (err?.code === 11000) {
+            throw conflict(
+              "Авто щойно забронював інший інструктор. Оновіть сторінку й спробуйте ще раз."
+            );
+          }
+          throw err;
+        });
+      }
     });
-  }
 
-  try {
-    const schedules = await Schedule.find({
-      instructorId,
-      date: { $gte: startDate, $lte: endDate }, // Пошук у діапазоні дат
-    }).populate("vehicleId");
-
-    res.status(200).json({ success: true, schedules });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+    res.status(200).json({ success: true, message: "Графік успішно збережено!" });
+  })
+);
 
 module.exports = router;
