@@ -9,5 +9,6 @@ router.use(authMiddleware);
 router.use(require("./students"));
 router.use(require("./exercises"));
 router.use(require("./plannedSchedule"));
+router.use(require("./groupSchedule"));
 
 module.exports = router;
