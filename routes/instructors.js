@@ -5,11 +5,13 @@ const PlannedSchedule = require("../models/PlannedSchedule");
 const authMiddleware = require("../middlewares/authMiddleware");
 const requireRole = require("../middlewares/requireRole");
 const { getStudentStatus } = require("../utils/studentStatus");
+const { syncInstructorReminders } = require("../utils/systemReminderSync");
 const { todayKyiv, addMonths, isValidDateStr } = require("../utils/dates");
 const {
   asyncHandler,
   badRequest,
   forbidden,
+  notFound,
   isObjectId,
   escapeRegex,
   asString,
@@ -27,6 +29,53 @@ router.get(
       .sort({ fullName: 1 })
       .lean();
     res.status(200).json({ success: true, instructors });
+  })
+);
+
+// Список для адміна / бухгалтера: разом зі строками документів (медогляд,
+// санітарна книжка). Публічний список вище цих даних не віддає.
+router.get(
+  "/staff",
+  authMiddleware,
+  requireRole.staff,
+  asyncHandler(async (req, res) => {
+    const instructors = await Instructor.find({})
+      .select("fullName certificate medicalExamUntil sanitaryBookUntil")
+      .sort({ fullName: 1 })
+      .lean();
+    res.status(200).json({ success: true, instructors });
+  })
+);
+
+const DOCUMENT_FIELDS = {
+  medicalExamUntil: "медогляду",
+  sanitaryBookUntil: "санітарної книжки",
+};
+
+// Строки документів інструктора ("дійсне до"); порожнє значення — не вказано.
+// Після збереження оновлюються автоматичні нагадування.
+router.put(
+  "/:id/documents",
+  authMiddleware,
+  requireRole.staff,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!isObjectId(id)) throw badRequest("Некоректний ID інструктора");
+
+    const data = {};
+    for (const [field, label] of Object.entries(DOCUMENT_FIELDS)) {
+      if (req.body[field] === undefined) continue;
+      const value = asString(req.body[field]) ?? "";
+      if (value && !isValidDateStr(value)) throw badRequest(`Некоректна дата ${label}`);
+      data[field] = value;
+    }
+
+    const instructor = await Instructor.findByIdAndUpdate(id, { $set: data }, { new: true })
+      .select("fullName certificate medicalExamUntil sanitaryBookUntil");
+    if (!instructor) throw notFound("Інструктора не знайдено");
+
+    await syncInstructorReminders(instructor);
+    res.status(200).json({ success: true, instructor });
   })
 );
 

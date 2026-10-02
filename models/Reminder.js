@@ -35,12 +35,23 @@ const reminderSchema = new mongoose.Schema(
 
     sourceType: {
       type: String,
-      enum: [null, "vehicle-insurance", "vehicle-inspection"],
+      enum: [
+        null,
+        "vehicle-insurance",
+        "vehicle-inspection",
+        "instructor-medical",
+        "instructor-sanitary",
+      ],
       default: null,
     },
     sourceVehicleId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Vehicle",
+      default: null,
+    },
+    sourceInstructorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Instructor",
       default: null,
     },
   },
@@ -49,13 +60,12 @@ const reminderSchema = new mongoose.Schema(
 
 reminderSchema.index({ assignees: 1 });
 reminderSchema.index({ createdByIdentity: 1 });
-// Одна системна картка на тип і ТЗ
+// Одна системна картка на тип і джерело (ТЗ або інструктора). Попередній
+// індекс system_card_unique (лише ТЗ) прибирає міграція
 reminderSchema.index(
-  { sourceType: 1, sourceVehicleId: 1 },
+  { sourceType: 1, sourceVehicleId: 1, sourceInstructorId: 1 },
   {
-    // Власне ім'я: у старих базах є не унікальний індекс з автоматичним
-    // ім'ям sourceType_1_sourceVehicleId_1 (його прибирає міграція)
-    name: "system_card_unique",
+    name: "system_card_unique_v2",
     unique: true,
     partialFilterExpression: { sourceType: { $type: "string" } },
   }

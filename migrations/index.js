@@ -3,7 +3,7 @@ const Migration = require("../models/Migration");
 const Instructor = require("../models/Instructor");
 const Reminder = require("../models/Reminder");
 const { withLock } = require("../utils/keyedLock");
-const { syncAllVehicleReminders } = require("../utils/vehicleReminderSync");
+const { syncAllVehicleReminders } = require("../utils/systemReminderSync");
 
 // Одноразові міграції даних. Виконуються при старті сервера по черзі, кожна
 // рівно один раз (журнал — колекція migrations). Нову міграцію додавати в
@@ -49,6 +49,20 @@ const MIGRATIONS = [
       await Reminder.createIndexes();
       await syncAllVehicleReminders();
       return `видалено дублікатів: ${extraIds.length}`;
+    },
+  },
+  {
+    name: "2026-10-system-reminders-for-instructors",
+    async up() {
+      // Унікальний індекс system_card_unique враховував лише ТЗ — друга
+      // картка інструктора того ж типу (sourceVehicleId = null) йому б
+      // суперечила. Його замінює system_card_unique_v2 (з sourceInstructorId).
+      const indexes = await Reminder.collection.indexes();
+      if (indexes.some((i) => i.name === "system_card_unique")) {
+        await Reminder.collection.dropIndex("system_card_unique");
+      }
+      await Reminder.createIndexes();
+      return "оновлено унікальний індекс системних карток";
     },
   },
 ];

@@ -5,6 +5,10 @@ const instructorSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   pinCode: { type: String, required: true },
   certificate: [{ type: String }],
+  // Документи інструктора: "дійсне до" (YYYY-MM-DD, "" — не вказано).
+  // Для кожної дати автоматично створюється нагадування (utils/systemReminderSync.js)
+  medicalExamUntil: { type: String, default: "" },
+  sanitaryBookUntil: { type: String, default: "" },
   // Версія токенів: збільшується при зміні PIN — усі видані раніше токени
   // інструктора перестають працювати (authMiddleware звіряє версію)
   tokenVersion: { type: Number, default: 0 },

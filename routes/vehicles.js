@@ -3,7 +3,7 @@ const Vehicle = require("../models/Vehicle");
 const Instructor = require("../models/Instructor");
 const authMiddleware = require("../middlewares/authMiddleware");
 const requireRole = require("../middlewares/requireRole");
-const { syncVehicleReminders } = require("../utils/vehicleReminderSync");
+const { syncVehicleReminders } = require("../utils/systemReminderSync");
 const { isValidDateStr } = require("../utils/dates");
 const {
   asyncHandler,

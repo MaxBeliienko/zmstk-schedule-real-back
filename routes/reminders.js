@@ -123,10 +123,13 @@ async function loadOwnEditableReminder(req, action) {
   if (!reminder) throw notFound("Картку не знайдено");
 
   if (reminder.sourceType) {
+    const [section, data] = reminder.sourceType.startsWith("instructor-")
+      ? ["'Інструктори'", "інструктора"]
+      : ["'МТБ: Транспортні засоби'", "ТЗ"];
     throw forbidden(
       action === "edit"
-        ? "Ця картка згенерована автоматично з МТБ — редагуйте дані ТЗ у розділі 'МТБ: Транспортні засоби'"
-        : "Ця картка згенерована автоматично з МТБ — приберіть дату в даних ТЗ, щоб її прибрати"
+        ? `Ця картка згенерована автоматично — редагуйте дані ${data} у розділі ${section}`
+        : `Ця картка згенерована автоматично — приберіть дату в даних ${data}, щоб її прибрати`
     );
   }
   if (reminder.createdByIdentity !== getIdentity(req.user)) {

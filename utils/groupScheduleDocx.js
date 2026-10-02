@@ -122,21 +122,35 @@ function headerRows(days, firstDayNumber) {
   ];
 }
 
+// Без причепа — один рядок "Автомобіль ..., інструктор ...". З причепом —
+// авто першим рядком, а причіп та інструктор разом другим (не розриваються)
 function vehicleRow(vehicle, color) {
   const style = { bold: true, italics: true, color, size: 28 };
-  const runs = vehicle.vehicleLabel
-    ? [text(`Автомобіль  ${vehicle.vehicleLabel}`, style)]
-    : [text("Транспортний засіб не призначено", style)];
-  if (vehicle.trailerLabel) runs.push(text(`, причіп ${vehicle.trailerLabel}`, style));
-  if (vehicle.instructorNames.length) {
-    runs.push(text(",  ", style));
-    runs.push(text(`інструктор  ${vehicle.instructorNames.join(", ")}`, { ...style, size: 32 }));
-  }
+  const vehicleRun = text(
+    vehicle.vehicleLabel
+      ? `Автомобіль  ${vehicle.vehicleLabel}`
+      : "Транспортний засіб не призначено",
+    style
+  );
+  const instructorRun = vehicle.instructorNames.length
+    ? text(`інструктор  ${vehicle.instructorNames.join(", ")}`, { ...style, size: 32 })
+    : null;
+
+  const paragraphs = vehicle.trailerLabel
+    ? [
+        para(vehicleRun),
+        para([
+          text(`причіп ${vehicle.trailerLabel}`, style),
+          ...(instructorRun ? [text(",  ", style), instructorRun] : []),
+        ]),
+      ]
+    : [para([vehicleRun, ...(instructorRun ? [text(",  ", style), instructorRun] : [])])];
+
   return row(
     [
       cell([], { width: NUMBER_COL }),
       cell([], { width: NAME_COL }),
-      cell([para(runs)], { width: DAYS_WIDTH, span: DAYS_PER_TABLE }),
+      cell(paragraphs, { width: DAYS_WIDTH, span: DAYS_PER_TABLE }),
     ],
     { height: 578 }
   );
