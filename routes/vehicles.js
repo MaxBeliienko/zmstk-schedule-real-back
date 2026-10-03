@@ -15,7 +15,7 @@ const {
 
 const router = express.Router();
 
-const ALLOWED_CATEGORIES = ["A1", "A", "B", "C", "C1", "CE", "D1", "D"];
+const { DRIVING_CATEGORIES: ALLOWED_CATEGORIES } = require("../config/categories");
 
 router.use(authMiddleware);
 

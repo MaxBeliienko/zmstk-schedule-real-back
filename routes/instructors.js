@@ -2,16 +2,24 @@ const express = require("express");
 const Instructor = require("../models/Instructor");
 const Student = require("../models/Student");
 const PlannedSchedule = require("../models/PlannedSchedule");
+const Schedule = require("../models/Schedule");
+const Vehicle = require("../models/Vehicle");
+const Reminder = require("../models/Reminder");
 const authMiddleware = require("../middlewares/authMiddleware");
 const requireRole = require("../middlewares/requireRole");
 const { getStudentStatus } = require("../utils/studentStatus");
-const { syncInstructorReminders } = require("../utils/systemReminderSync");
+const {
+  syncInstructorReminders,
+  syncVehicleReminders,
+} = require("../utils/systemReminderSync");
+const { DRIVING_CATEGORIES } = require("../config/categories");
 const { todayKyiv, addMonths, isValidDateStr } = require("../utils/dates");
 const {
   asyncHandler,
   badRequest,
   forbidden,
   notFound,
+  conflict,
   isObjectId,
   escapeRegex,
   asString,
@@ -32,6 +40,8 @@ router.get(
   })
 );
 
+const STAFF_FIELDS = "fullName certificate medicalExamUntil sanitaryBookUntil";
+
 // Список для адміна / бухгалтера: разом зі строками документів (медогляд,
 // санітарна книжка). Публічний список вище цих даних не віддає.
 router.get(
@@ -40,7 +50,7 @@ router.get(
   requireRole.staff,
   asyncHandler(async (req, res) => {
     const instructors = await Instructor.find({})
-      .select("fullName certificate medicalExamUntil sanitaryBookUntil")
+      .select(STAFF_FIELDS)
       .sort({ fullName: 1 })
       .lean();
     res.status(200).json({ success: true, instructors });
@@ -52,30 +62,143 @@ const DOCUMENT_FIELDS = {
   sanitaryBookUntil: "санітарної книжки",
 };
 
-// Строки документів інструктора ("дійсне до"); порожнє значення — не вказано.
+// Поля картки інструктора з тіла запиту. ПІБ і PIN задаються лише при
+// створенні (за ПІБ інструктор входить у кабінет); при редагуванні —
+// категорії та строки документів, лише ті поля, що прийшли в запиті.
+function parseInstructorBody(body, { isNew }) {
+  const data = {};
+
+  if (isNew) {
+    const fullName = asString(body.fullName)?.trim().replace(/\s+/g, " ");
+    if (!fullName) throw badRequest("Вкажіть ПІБ інструктора");
+    data.fullName = fullName.slice(0, 150);
+
+    const pinCode = asString(body.pinCode);
+    if (!/^\d{6}$/.test(pinCode || "")) throw badRequest("PIN має складатися з 6 цифр");
+    data.pinCode = pinCode;
+  }
+
+  if (body.certificate !== undefined || isNew) {
+    const list = Array.isArray(body.certificate) ? body.certificate : [];
+    // Порядок як у довіднику (A1, A, B, …), без дублів і невідомих значень
+    data.certificate = DRIVING_CATEGORIES.filter((c) => list.includes(c));
+  }
+
+  for (const [field, label] of Object.entries(DOCUMENT_FIELDS)) {
+    if (body[field] === undefined) continue;
+    const value = asString(body[field]) ?? "";
+    if (value && !isValidDateStr(value)) throw badRequest(`Некоректна дата ${label}`);
+    data[field] = value;
+  }
+
+  return data;
+}
+
+const pickStaffFields = (instructor) => ({
+  _id: instructor._id,
+  fullName: instructor.fullName,
+  certificate: instructor.certificate,
+  medicalExamUntil: instructor.medicalExamUntil,
+  sanitaryBookUntil: instructor.sanitaryBookUntil,
+});
+
+// Додати інструктора (адмін або бухгалтер)
+router.post(
+  "/",
+  authMiddleware,
+  requireRole.staff,
+  asyncHandler(async (req, res) => {
+    const data = parseInstructorBody(req.body, { isNew: true });
+
+    // Вхід у кабінет — за ПІБ, тож однакових ПІБ бути не може
+    const duplicate = await Instructor.exists({
+      fullName: { $regex: `^\\s*${escapeRegex(data.fullName)}\\s*$`, $options: "i" },
+    });
+    if (duplicate) throw conflict(`Інструктор "${data.fullName}" вже існує`);
+
+    const instructor = await Instructor.create(data);
+    await syncInstructorReminders(instructor);
+    res.status(201).json({ success: true, instructor: pickStaffFields(instructor) });
+  })
+);
+
+// Редагувати категорії та строки документів (адмін або бухгалтер).
 // Після збереження оновлюються автоматичні нагадування.
 router.put(
-  "/:id/documents",
+  "/:id",
   authMiddleware,
   requireRole.staff,
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     if (!isObjectId(id)) throw badRequest("Некоректний ID інструктора");
 
-    const data = {};
-    for (const [field, label] of Object.entries(DOCUMENT_FIELDS)) {
-      if (req.body[field] === undefined) continue;
-      const value = asString(req.body[field]) ?? "";
-      if (value && !isValidDateStr(value)) throw badRequest(`Некоректна дата ${label}`);
-      data[field] = value;
-    }
-
+    const data = parseInstructorBody(req.body, { isNew: false });
     const instructor = await Instructor.findByIdAndUpdate(id, { $set: data }, { new: true })
-      .select("fullName certificate medicalExamUntil sanitaryBookUntil");
+      .select(STAFF_FIELDS);
     if (!instructor) throw notFound("Інструктора не знайдено");
 
     await syncInstructorReminders(instructor);
-    res.status(200).json({ success: true, instructor });
+    res.status(200).json({ success: true, instructor: pickStaffFields(instructor) });
+  })
+);
+
+// Прибирає посилання на видаленого інструктора: з карток курсантів,
+// відповідальних за ТЗ і з нагадувань. Минулі заняття в графіках
+// лишаються як історія.
+async function removeInstructorReferences(id) {
+  const identity = `instructor:${id}`;
+
+  await Student.updateMany({ instructorIds: id }, { $pull: { instructorIds: id } });
+
+  const vehicles = await Vehicle.find({ responsibleInstructorId: id });
+  for (const vehicle of vehicles) {
+    vehicle.responsibleInstructorId = null;
+    vehicle.responsibleAssignedAt = null;
+    await vehicle.save();
+    await syncVehicleReminders(vehicle);
+  }
+
+  await Reminder.deleteMany({
+    $or: [{ sourceInstructorId: id }, { createdByIdentity: identity }],
+  });
+  await Reminder.updateMany(
+    { assignees: identity },
+    { $pull: { assignees: identity, viewerStates: { identity } } }
+  );
+  // Картки, у яких не лишилось жодного виконавця, нікому не потрібні
+  await Reminder.deleteMany({ assignees: { $size: 0 } });
+}
+
+// Видалити інструктора — тільки адмін. Не можна, поки в нього є
+// заплановані заняття від сьогодні (спочатку їх треба передати іншому).
+router.delete(
+  "/:id",
+  authMiddleware,
+  requireRole.admin,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!isObjectId(id)) throw badRequest("Некоректний ID інструктора");
+
+    const instructor = await Instructor.findById(id).select("fullName").lean();
+    if (!instructor) throw notFound("Інструктора не знайдено");
+
+    const today = todayKyiv();
+    const [planned, real] = await Promise.all([
+      PlannedSchedule.countDocuments({ instructorId: id, date: { $gte: today } }),
+      Schedule.countDocuments({ instructorId: id, date: { $gte: today } }),
+    ]);
+    if (planned || real) {
+      const parts = [];
+      if (planned) parts.push(`у плановому графіку — ${planned}`);
+      if (real) parts.push(`у реальному графіку — ${real}`);
+      throw conflict(
+        `У інструктора ${instructor.fullName} є майбутні заняття (${parts.join(", ")}). Передайте їх іншому інструктору або видаліть, тоді повторіть.`
+      );
+    }
+
+    await Instructor.deleteOne({ _id: id });
+    await removeInstructorReferences(id);
+    res.status(200).json({ success: true, message: "Інструктора видалено" });
   })
 );
 
