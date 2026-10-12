@@ -8,7 +8,7 @@ const {
   getStudentStatus,
   compareByStatusThenName,
 } = require("../../utils/studentStatus");
-const { isValidDateStr, todayKyiv, addMonths } = require("../../utils/dates");
+const { isValidDateStr, todayKyiv, addMonths, dateRangeError } = require("../../utils/dates");
 const {
   asyncHandler,
   badRequest,
@@ -110,12 +110,22 @@ function assertStudentConsistency(student) {
 
 // ================= КУРСАНТИ =================
 
-// Список курсантів (адмін і бухгалтер)
+// Список курсантів (адмін і бухгалтер).
+// endFrom / endTo (YYYY-MM-DD, обидва) — лише курсанти, у яких дата
+// закінчення навчання в цьому періоді (підрахунок випуску). З ними архів
+// завантажується завжди: випуск минулих років — це саме архівні курсанти.
 router.get(
   "/students",
   requireRole.staff,
   asyncHandler(async (req, res) => {
-    const includeArchive = req.query.includeArchive === "true";
+    const endFrom = asString(req.query.endFrom);
+    const endTo = asString(req.query.endTo);
+    const byEndDate = endFrom !== undefined || endTo !== undefined;
+    if (byEndDate) {
+      const rangeError = dateRangeError(endFrom, endTo);
+      if (rangeError) throw badRequest(rangeError);
+    }
+    const includeArchive = byEndDate || req.query.includeArchive === "true";
     const search = asString(req.query.search)?.trim();
     const today = todayKyiv();
 
@@ -124,8 +134,12 @@ router.get(
       const pattern = { $regex: escapeRegex(search), $options: "i" };
       query.$or = [{ fullName: pattern }, { group: pattern }];
     }
-    // Архів (завершили навчання > 6 міс. тому) відсікаємо ще в БД
-    if (!includeArchive) query.endDate = { $gte: addMonths(today, -6) };
+    if (byEndDate) {
+      query.endDate = { $gte: endFrom, $lte: endTo };
+    } else if (!includeArchive) {
+      // Архів (завершили навчання > 6 міс. тому) відсікаємо ще в БД
+      query.endDate = { $gte: addMonths(today, -6) };
+    }
 
     const students = await Student.find(query)
       .populate("instructorIds", "fullName")

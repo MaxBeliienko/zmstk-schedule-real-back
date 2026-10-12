@@ -12,9 +12,6 @@ const instructorSchema = new mongoose.Schema({
   // Версія токенів: збільшується при зміні PIN — усі видані раніше токени
   // інструктора перестають працювати (authMiddleware звіряє версію)
   tokenVersion: { type: Number, default: 0 },
-  // Захист від перебору PIN: лічильник невдалих спроб і тимчасове блокування
-  failedLoginAttempts: { type: Number, default: 0 },
-  lockUntil: { type: Date, default: null },
 });
 
 const isBcryptHash = (value) =>

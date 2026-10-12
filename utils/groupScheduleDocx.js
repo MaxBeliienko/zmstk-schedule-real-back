@@ -36,6 +36,8 @@ const COLOR_DATE = "FF0000";
 const COLOR_LESSON = "C00000";
 // Смуги курсантів по черзі (білий / світло-сірий) — щоб легше читати рядки
 const STRIPE_FILL = "E7E6E6";
+// Заняття на автодромі — окремий колір клітинок (перекриває смугу курсанта)
+const AUTODROME_FILL = "C6E0B4";
 // Кольори рядків "Автомобіль ..." по черзі — як у паперовому графіку
 const VEHICLE_COLORS = ["4F6228", "403152", "984806", "17365D"];
 
@@ -67,9 +69,14 @@ const row = (cells, { height, header } = {}) =>
     height: height ? { value: height, rule: HeightRule.ATLEAST } : undefined,
   });
 
-// Клітинки днів одного рядка; недостачу в останній таблиці доповнюємо порожніми
+// Клітинки днів одного рядка; недостачу в останній таблиці доповнюємо порожніми.
+// fill — колір або функція (day) => колір для окремої клітинки
 const dayCells = (days, render, fill) =>
-  DAY_COLS.map((width, i) => cell(i < days.length ? render(days[i], i) : [], { width, fill }));
+  DAY_COLS.map((width, i) => {
+    const day = days[i];
+    const dayFill = typeof fill === "function" ? (day ? fill(day) : undefined) : fill;
+    return cell(day ? render(day, i) : [], { width, fill: dayFill });
+  });
 
 function headerRows(days, firstDayNumber) {
   const numberHeader = (merge, children = []) =>
@@ -169,6 +176,7 @@ function studentRows(student, days) {
     ]);
   // Парні курсанти — на сірому тлі; номер наскрізний, тож смуги однакові на всіх сторінках
   const fill = student && student.number % 2 === 0 ? STRIPE_FILL : undefined;
+  const dayFill = (day) => (student?.cells[day.date]?.isAutodrome ? AUTODROME_FILL : fill);
 
   return [
     row(
@@ -184,7 +192,7 @@ function studentRows(student, days) {
             : [],
           { width: NAME_COL, merge: VerticalMergeType.RESTART, fill }
         ),
-        ...dayCells(days, timeCell, fill),
+        ...dayCells(days, timeCell, dayFill),
       ],
       { height: 284 }
     ),
@@ -192,7 +200,7 @@ function studentRows(student, days) {
       [
         cell([], { width: NUMBER_COL, merge: VerticalMergeType.CONTINUE, fill }),
         cell([], { width: NAME_COL, merge: VerticalMergeType.CONTINUE, fill }),
-        ...dayCells(days, exerciseCell, fill),
+        ...dayCells(days, exerciseCell, dayFill),
       ],
       { height: 284 }
     ),
@@ -246,6 +254,19 @@ function titleBlock(model) {
   ];
 }
 
+// Умовне позначення під таблицею: кольоровий квадрат — заняття на автодромі
+function legend() {
+  return new Paragraph({
+    spacing: { before: 120 },
+    children: [
+      text("    ", {
+        shading: { type: ShadingType.CLEAR, color: "auto", fill: AUTODROME_FILL },
+      }),
+      text("  — заняття на автодромі", { size: 22 }),
+    ],
+  });
+}
+
 async function renderGroupScheduleDocx(model) {
   const children = [...titleBlock(model)];
   // Хоча б одна таблиця — навіть якщо днів немає (порожній бланк)
@@ -256,7 +277,7 @@ async function renderGroupScheduleDocx(model) {
     if (i > 0) children.push(new Paragraph({ pageBreakBefore: true, children: [] }));
     children.push(scheduleTable(model, days, i * DAYS_PER_TABLE + 1));
   }
-  children.push(new Paragraph({ children: [] }));
+  children.push(legend());
 
   const doc = new Document({
     creator: "ЗМСТК — розклад",

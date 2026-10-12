@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const rateLimit = require("express-rate-limit");
 const Instructor = require("../models/Instructor");
+const LoginAttempt = require("../models/LoginAttempt");
 const authMiddleware = require("../middlewares/authMiddleware");
 const {
   JWT_SECRET,
@@ -32,10 +33,15 @@ const loginLimiter = rateLimit({
 
 const { isBcryptHash } = Instructor;
 
-// Блокування акаунта інструктора після серії невдалих спроб — захищає PIN
-// від перебору навіть з різних IP (ліміт за IP цього не покриває)
+// Блокування після серії невдалих спроб — за парою "IP + інструктор".
+// Раніше блокувався сам акаунт, і будь-хто, знаючи ПІБ (список публічний),
+// міг анонімно заблокувати вхід інструктору. Тепер блокується лише та IP,
+// з якої вводили неправильний PIN; сам інструктор з іншої мережі (або
+// після спливання блокування) входить як завжди.
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
+// Вікно, у якому рахуються невдалі спроби (лічильник скидається після нього)
+const ATTEMPT_WINDOW_MINUTES = 15;
 
 // Хеш-"пустушка": якщо ПІБ не знайдено, все одно робимо bcrypt.compare,
 // щоб за часом відповіді не можна було визначити, чи існує такий інструктор
@@ -63,25 +69,36 @@ function signToken(payload) {
 
 const minutesLeft = (date) => Math.max(1, Math.ceil((date - Date.now()) / 60000));
 
-async function registerFailedAttempt(instructorId) {
-  const updated = await Instructor.findByIdAndUpdate(
-    instructorId,
-    { $inc: { failedLoginAttempts: 1 } },
-    { new: true }
-  ).select("failedLoginAttempts");
-  if (updated && updated.failedLoginAttempts >= MAX_FAILED_ATTEMPTS) {
-    await Instructor.updateOne(
-      { _id: instructorId },
-      {
-        $set: {
-          failedLoginAttempts: 0,
-          lockUntil: new Date(Date.now() + LOCK_MINUTES * 60 * 1000),
-        },
-      }
-    );
-    return true;
-  }
-  return false;
+const attemptKey = (req, instructorId) => `${req.ip}|${instructorId}`;
+
+// Повертає дату, до якої вхід з цієї IP для інструктора заблоковано, або null
+async function getLockUntil(key) {
+  const attempt = await LoginAttempt.findById(key).select("lockUntil").lean();
+  return attempt?.lockUntil && attempt.lockUntil > new Date() ? attempt.lockUntil : null;
+}
+
+// Атомарно рахує невдалу спробу; на MAX_FAILED_ATTEMPTS-й блокує пару
+// "IP + інструктор" на LOCK_MINUTES. Повертає true, якщо блокування настало.
+async function registerFailedAttempt(key) {
+  const now = Date.now();
+  // Прострочений запис (вікно минуло, TTL-монітор ще не прибрав) — починаємо заново
+  await LoginAttempt.deleteOne({ _id: key, expiresAt: { $lte: new Date(now) } });
+  const updated = await LoginAttempt.findOneAndUpdate(
+    { _id: key },
+    {
+      $inc: { count: 1 },
+      $setOnInsert: { expiresAt: new Date(now + ATTEMPT_WINDOW_MINUTES * 60 * 1000) },
+    },
+    { upsert: true, new: true }
+  );
+  if (updated.count < MAX_FAILED_ATTEMPTS) return false;
+
+  const lockUntil = new Date(now + LOCK_MINUTES * 60 * 1000);
+  await LoginAttempt.updateOne(
+    { _id: key },
+    { $set: { count: 0, lockUntil, expiresAt: lockUntil } }
+  );
+  return true;
 }
 
 function staffLoginResponse(res, role) {
@@ -118,11 +135,13 @@ router.post(
       throw new HttpError(401, "Невірне ПІБ або пароль");
     }
 
-    if (instructor.lockUntil && instructor.lockUntil > new Date()) {
+    const key = attemptKey(req, instructor._id);
+    const lockUntil = await getLockUntil(key);
+    if (lockUntil) {
       throw new HttpError(
         429,
-        `Забагато невдалих спроб. Вхід для цього інструктора заблоковано на ${minutesLeft(
-          instructor.lockUntil
+        `Забагато невдалих спроб. Вхід з цього пристрою заблоковано на ${minutesLeft(
+          lockUntil
         )} хв.`
       );
     }
@@ -145,19 +164,16 @@ router.post(
     }
 
     if (!isValidPin) {
-      const locked = await registerFailedAttempt(instructor._id);
+      const locked = await registerFailedAttempt(key);
       throw new HttpError(
         locked ? 429 : 401,
         locked
-          ? `Забагато невдалих спроб. Вхід для цього інструктора заблоковано на ${LOCK_MINUTES} хв.`
+          ? `Забагато невдалих спроб. Вхід з цього пристрою заблоковано на ${LOCK_MINUTES} хв.`
           : "Невірне ПІБ або пароль"
       );
     }
 
-    if (instructor.failedLoginAttempts || instructor.lockUntil) {
-      instructor.failedLoginAttempts = 0;
-      instructor.lockUntil = null;
-    }
+    await LoginAttempt.deleteOne({ _id: key });
     if (instructor.isModified()) await instructor.save();
 
     const user = {

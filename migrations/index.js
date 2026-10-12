@@ -65,6 +65,19 @@ const MIGRATIONS = [
       return "оновлено унікальний індекс системних карток";
     },
   },
+  {
+    name: "2026-10-login-lock-per-ip",
+    async up() {
+      // Блокування входу тепер за парою "IP + інструктор" (колекція
+      // loginattempts) — старі поля блокування акаунта більше не потрібні
+      const result = await Instructor.updateMany(
+        {},
+        { $unset: { failedLoginAttempts: "", lockUntil: "" } },
+        { strict: false }
+      );
+      return `очищено старі поля блокування: ${result.modifiedCount}`;
+    },
+  },
 ];
 
 async function runMigrations() {

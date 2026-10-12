@@ -179,6 +179,8 @@ function buildGroupSchedule({ group, students, lessons }) {
       const cells = {};
       for (const [date, dayLessons] of byDate) {
         cells[date] = {
+          // Хоча б одне заняття дня на автодромі — клітинки дня заливаються кольором
+          isAutodrome: dayLessons.some((l) => l.isAutodrome),
           times: dayLessons.map((l) => formatTimeRange(l.startTime, l.endTime)),
           // Як у паперовому графіку: заняття з "чужим" інструктором — його
           // прізвище скорочено поруч з вправою ("2.2 СТЕБ"), на іншому авто —
