@@ -62,9 +62,12 @@ const DOCUMENT_FIELDS = {
   sanitaryBookUntil: "санітарної книжки",
 };
 
-// Поля картки інструктора з тіла запиту. ПІБ і PIN задаються лише при
-// створенні (за ПІБ інструктор входить у кабінет); при редагуванні —
-// категорії та строки документів, лише ті поля, що прийшли в запиті.
+const isValidPin = (value) => /^\d{6}$/.test(value || "");
+
+// Поля картки інструктора з тіла запиту. ПІБ задається лише при створенні
+// (за ПІБ інструктор входить у кабінет). PIN обов'язковий при створенні, а
+// при редагуванні — необов'язковий: якщо передано, PIN змінюється. Решта
+// полів при редагуванні — лише ті, що прийшли в запиті.
 function parseInstructorBody(body, { isNew }) {
   const data = {};
 
@@ -72,9 +75,11 @@ function parseInstructorBody(body, { isNew }) {
     const fullName = asString(body.fullName)?.trim().replace(/\s+/g, " ");
     if (!fullName) throw badRequest("Вкажіть ПІБ інструктора");
     data.fullName = fullName.slice(0, 150);
+  }
 
-    const pinCode = asString(body.pinCode);
-    if (!/^\d{6}$/.test(pinCode || "")) throw badRequest("PIN має складатися з 6 цифр");
+  const pinCode = asString(body.pinCode);
+  if (isNew || pinCode) {
+    if (!isValidPin(pinCode)) throw badRequest("PIN має складатися з 6 цифр");
     data.pinCode = pinCode;
   }
 
@@ -122,7 +127,7 @@ router.post(
   })
 );
 
-// Редагувати категорії та строки документів (адмін або бухгалтер).
+// Редагувати категорії, строки документів і PIN (адмін або бухгалтер).
 // Після збереження оновлюються автоматичні нагадування.
 router.put(
   "/:id",
@@ -133,12 +138,21 @@ router.put(
     if (!isObjectId(id)) throw badRequest("Некоректний ID інструктора");
 
     const data = parseInstructorBody(req.body, { isNew: false });
-    const instructor = await Instructor.findByIdAndUpdate(id, { $set: data }, { new: true })
-      .select(STAFF_FIELDS);
+    const instructor = await Instructor.findById(id);
     if (!instructor) throw notFound("Інструктора не знайдено");
 
+    // Через save(), а не findByIdAndUpdate: лише так спрацьовує pre-save
+    // хук моделі — він хешує новий PIN і збільшує tokenVersion, тож усі
+    // старі сесії інструктора завершуються
+    instructor.set(data);
+    await instructor.save();
+
     await syncInstructorReminders(instructor);
-    res.status(200).json({ success: true, instructor: pickStaffFields(instructor) });
+    res.status(200).json({
+      success: true,
+      instructor: pickStaffFields(instructor),
+      pinChanged: Boolean(data.pinCode),
+    });
   })
 );
 

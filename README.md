@@ -17,7 +17,7 @@ REST API системи розкладу автошколи ЗМСТК: реал
 ```bash
 npm install
 cp .env.example .env      # заповніть змінні (див. нижче)
-npm run dev               # nodemon, перезапуск при змінах
+npm run dev               # node --watch, перезапуск при змінах
 # або
 npm start                 # звичайний запуск
 ```
@@ -70,7 +70,7 @@ NODE_ENV=production node seed.js --yes --production   # бойова база �
 | `accountant` | пароль (`POST /api/auth/staff-login`) | Курсанти й оплати, МТБ, інструктори, календар (без видалення і без планового графіка) |
 
 - Токен передається в заголовку `Authorization: Bearer <token>` і діє 30 днів.
-- Токени інструктора відкликаються при його видаленні або зміні PIN (поле `tokenVersion`).
+- Токени інструктора відкликаються при його видаленні або зміні PIN (поле `tokenVersion`). PIN змінює адмін або бухгалтер у розділі «Інструктори».
 - **Захист від перебору:**
   - не більше 10 невдалих спроб входу за 15 хв з однієї IP;
   - після 5 невдалих спроб PIN конкретного інструктора з однієї IP вхід **з цієї IP для цього інструктора** блокується на 15 хв (колекція `loginattempts`, записи видаляє TTL-індекс);
@@ -88,7 +88,7 @@ NODE_ENV=production node seed.js --yes --production   # бойова база �
 | `GET /api/auth/me` | усі | Поточна сесія |
 | `GET /api/instructors` | — | Публічний список ПІБ (для сторінки входу) |
 | `GET /api/instructors/staff` | admin, accountant | Інструктори зі строками медогляду / санкнижки |
-| `POST /api/instructors`, `PUT /api/instructors/:id` | admin, accountant | Створення / редагування |
+| `POST /api/instructors`, `PUT /api/instructors/:id` | admin, accountant | Створення / редагування. `pinCode` у PUT (необов'язково, 6 цифр) змінює PIN і завершує всі сесії інструктора |
 | `DELETE /api/instructors/:id` | admin | Видалення (лише без майбутніх занять) |
 | `GET /api/instructors/me/autodrome` | instructor | Заняття на автодромі з планового графіка |
 | `GET /api/instructors/:id/students` | instructor (свій), admin | Журнал курсантів інструктора |
@@ -101,11 +101,23 @@ NODE_ENV=production node seed.js --yes --production   # бойова база �
 | `DELETE /api/admin/students/:id` | admin | Видалення разом з його плановими заняттями |
 | `GET /api/admin/students-summary` | admin | Курсанти «Практики» за період навчання |
 | `GET /api/admin/students/:id/details` | admin, accountant | Статистика курсанта за вправами |
-| `GET/POST/PUT/DELETE /api/admin/planned-schedule[/:id]` | admin | Плановий графік (перевірка конфліктів ТЗ / причепа / курсанта / інструктора) |
+| `GET/POST/PUT/DELETE /api/admin/planned-schedule[/:id]` | admin | Плановий графік (перевірка конфліктів ТЗ / причепа / курсанта / інструктора). GET: `startDate`, `endDate` (обов'язкові), `instructorId` або `vehicleId` (заняття, де ТЗ — основне авто або причіп; для звіту по ТЗ) |
 | `GET /api/admin/planned-schedule/available-resources` | admin | Вільні курсанти й ТЗ на інтервал |
 | `GET /api/admin/exercises` | admin | Довідник вправ |
 | `GET /api/admin/group-schedule/document?group=N` | admin | Word-графік групи |
 | `/api/reminders/*` | усі | Календар: картки, повторення, спливаючі сповіщення |
+
+## Тести
+
+```bash
+npm test             # усі тести (≈ 1 хв)
+npm run test:unit    # лише логіка без БД (кілька секунд)
+```
+
+- `tests/unit/` — чиста логіка: дати за Києвом, статуси курсантів, повторення нагадувань, Word-графік групи.
+- `tests/api/` — запити до API так, як їх робить фронтенд: вхід і блокування, зміна PIN, конфлікти планового й реального графіка, звіт по ТЗ, оплати курсантів.
+- API-тести запускають **тимчасову MongoDB у пам'яті** (`mongodb-memory-server-core`). Реальна база з `.env` не використовується. Під час першого запуску MongoDB завантажується (~100 МБ) і кешується.
+- Запускайте тести перед кожним деплоєм: якщо щось зламалось, тест укаже, що саме.
 
 ## Word-графік групи
 
@@ -117,6 +129,9 @@ NODE_ENV=production node seed.js --yes --production   # бойова база �
 ## Структура
 
 ```
+app.js         Express-застосунок (маршрути, middleware) — без запуску
+server.js      підключення до БД, міграції, запуск app
+tests/         автотести (tests/unit — логіка, tests/api — API на тимчасовій БД)
 config/        константи (категорії, слоти, JWT, реквізити документів)
 middlewares/   авторизація, ролі, санітизація, обробка помилок
 migrations/    одноразові міграції даних при старті

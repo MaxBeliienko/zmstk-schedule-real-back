@@ -40,5 +40,8 @@ plannedScheduleSchema.index(
   { unique: true }
 );
 plannedScheduleSchema.index({ date: 1, instructorId: 1 });
+// Звіт по ТЗ за період: ТЗ може бути основним авто або причепом
+plannedScheduleSchema.index({ vehicleId: 1, date: 1 });
+plannedScheduleSchema.index({ trailerId: 1, date: 1 });
 
 module.exports = mongoose.model("PlannedSchedule", plannedScheduleSchema);

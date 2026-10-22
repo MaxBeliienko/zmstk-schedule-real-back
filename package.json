@@ -1,12 +1,14 @@
 {
   "name": "zmstk-schedule",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Backend for ZMSTK Scheduler",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "seed": "node seed.js"
+    "dev": "node --watch server.js",
+    "seed": "node seed.js",
+    "test": "node --test \"tests/**/*.test.js\"",
+    "test:unit": "node --test \"tests/unit/*.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -19,10 +21,11 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.4.1"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.2"
-  },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "mongodb-memory-server-core": "^11.3.0",
+    "supertest": "^7.3.1"
   }
 }

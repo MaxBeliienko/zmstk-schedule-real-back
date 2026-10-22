@@ -63,11 +63,15 @@ router.get(
   })
 );
 
-// Отримати плановий графік (фільтр за інструктором і діапазоном дат)
+// Отримати плановий графік за діапазоном дат. Необов'язкові фільтри:
+//  - instructorId — заняття інструктора (сторінка планового графіка);
+//  - vehicleId — заняття, де цей ТЗ є основним авто АБО причепом
+//    (звіт по ТЗ за період у панелі адміна).
 router.get(
   "/planned-schedule",
   asyncHandler(async (req, res) => {
     const instructorId = asString(req.query.instructorId);
+    const vehicleId = asString(req.query.vehicleId);
     const startDate = asString(req.query.startDate);
     const endDate = asString(req.query.endDate);
     const filter = {};
@@ -76,12 +80,17 @@ router.get(
       if (!isObjectId(instructorId)) throw badRequest("Некоректний ID інструктора");
       filter.instructorId = instructorId;
     }
+    if (vehicleId) {
+      if (!isObjectId(vehicleId)) throw badRequest("Некоректний ID транспортного засобу");
+      filter.$or = [{ vehicleId }, { trailerId: vehicleId }];
+    }
     // Діапазон обов'язковий: без нього запит віддавав усю колекцію
     const rangeError = dateRangeError(startDate, endDate, MAX_GRID_RANGE_DAYS);
     if (rangeError) throw badRequest(rangeError);
     filter.date = { $gte: startDate, $lte: endDate };
 
     const schedules = await PlannedSchedule.find(filter)
+      .populate("instructorId", "fullName")
       .populate("studentId", "fullName group category isPreparation")
       .populate("vehicleId", "brand plateNumber isTrailer isTowbar")
       .populate("trailerId", "brand plateNumber")
