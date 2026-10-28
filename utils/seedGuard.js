@@ -1,9 +1,11 @@
-const bcrypt = require("bcryptjs");
+// Допоміжні функції для seed-скриптів (seed.js, seedPlannedData.js).
 
-// Seed-скрипти ВИДАЛЯЮТЬ дані (deleteMany({})) у базі з MONGODB_URI.
-// Щоб випадково не стерти бойову базу, запуск дозволено лише з явним
-// підтвердженням: `node seed.js --yes`, а для NODE_ENV=production —
-// додатково `--production`.
+const Instructor = require("../models/Instructor");
+const Account = require("../models/Account");
+const { derivePasswordKey } = require("./passwords");
+
+// Seed-скрипти видаляють дані, тож запуск дозволено лише з прапорцем --yes,
+// а для NODE_ENV=production — ще й з --production
 function assertSeedAllowed(scriptName) {
   const args = process.argv.slice(2);
   const host = (() => {
@@ -30,8 +32,18 @@ function assertSeedAllowed(scriptName) {
   console.log(`⚠️  ${scriptName}: очищення та заповнення бази ${host}`);
 }
 
-// insertMany не викликає pre("save") хук моделі, тож хешуємо PIN явно
-const withHashedPins = (instructors) =>
-  instructors.map((i) => ({ ...i, pinCode: bcrypt.hashSync(String(i.pinCode), 10) }));
+// Створює інструкторів разом з обліковими записами; pinCode — їхній пароль
+async function insertInstructorsWithAccounts(instructors) {
+  await Account.deleteMany({ role: "instructor" });
+  for (const { pinCode, ...data } of instructors) {
+    const instructor = await Instructor.create(data);
+    await Account.create({
+      role: "instructor",
+      fullName: instructor.fullName,
+      instructorId: instructor._id,
+      passwordKey: await derivePasswordKey(String(pinCode)),
+    });
+  }
+}
 
-module.exports = { assertSeedAllowed, withHashedPins };
+module.exports = { assertSeedAllowed, insertInstructorsWithAccounts };

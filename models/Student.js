@@ -1,15 +1,23 @@
+// Курсант: дані навчання, оплата та історія змін передплати.
+// optimisticConcurrency: якщо двоє одночасно редагують курсанта, друге
+// збереження отримає 409 замість тихого перезапису (middlewares/errorHandler.js).
+
 const mongoose = require("mongoose");
 
+// Запис історії передплати: нова сума, зміна і хто її вніс
 const prepaymentHistorySchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   delta: { type: Number, required: true },
   role: { type: String, enum: ["Admin", "Accountant"], default: "Admin" },
+  accountId: { type: mongoose.Schema.Types.ObjectId, ref: "Account", default: null },
+  byName: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now },
 });
 
 const studentSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   phone: { type: String, default: "" },
+  // Закріплені інструктори; перший у списку вважається основним
   instructorIds: [
     { type: mongoose.Schema.Types.ObjectId, ref: "Instructor" },
   ],
@@ -18,6 +26,7 @@ const studentSchema = new mongoose.Schema({
   startDate: { type: String, required: true },
   endDate: { type: String, required: true },
   isPreparation: { type: Boolean, default: false },
+  // Напрямок навчання: у плановий графік потрапляють лише курсанти "Практика"
   studyType: {
     type: String,
     enum: ["Теорія", "Практика"],
@@ -33,8 +42,6 @@ const studentSchema = new mongoose.Schema({
   reviewLeft: { type: Boolean, default: false },
   reviewPlatform: { type: String, default: "" },
 },
-// Одночасне редагування (напр. адмін і бухгалтер змінюють передплату) —
-// друге збереження отримає 409, а не тихо перезапише перше
 { optimisticConcurrency: true });
 
 studentSchema.index({ instructorIds: 1 });

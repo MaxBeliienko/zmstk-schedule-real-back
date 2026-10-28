@@ -1,3 +1,6 @@
+// Транспортний засіб (МТБ). Для строків страхування й техогляду автоматично
+// створюються нагадування (utils/systemReminderSync.js).
+
 const mongoose = require("mongoose");
 
 const vehicleSchema = new mongoose.Schema({
@@ -7,12 +10,14 @@ const vehicleSchema = new mongoose.Schema({
   isTowbar: { type: Boolean, default: false },
   isTrailer: { type: Boolean, default: false },
 
+  // Відповідальний інструктор; його основне авто підставляється в кабінеті
   responsibleInstructorId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Instructor",
     default: null,
   },
 
+  // Коли призначено відповідального: якщо авто кілька, основне — призначене першим
   responsibleAssignedAt: { type: Date, default: null },
   insuranceUntil: { type: String, default: "" },
   inspectionUntil: { type: String, default: "" },

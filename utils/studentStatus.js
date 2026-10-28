@@ -1,6 +1,10 @@
+// Статус курсанта за датами навчання. Використовується в списках курсантів,
+// журналі інструктора та при виборі курсанта в плановий графік.
+// Та сама логіка є у фронтенді (src/config/studentStatus.js).
+
 const { todayKyiv, addMonths, isValidDateStr } = require("./dates");
 
-// Порядок статусів при сортуванні списків курсантів
+// Порядок сортування статусів у списках
 const STATUS_PRIORITY = {
   Активний: 1,
   Очікує: 2,
@@ -8,10 +12,8 @@ const STATUS_PRIORITY = {
   Архів: 4,
 };
 
-// Розрахунок статусу курсанта відносно дат навчання.
-// Усі дати — рядки YYYY-MM-DD, тож порівнюємо їх як рядки: це точно і не
-// залежить від часового поясу сервера. targetDate за замовчуванням —
-// сьогодні за Києвом.
+// Очікує — навчання ще не почалось; Активний — триває; Неактивний — закінчилось
+// менше ніж 6 міс. тому; Архів — давніше (або дати некоректні)
 function getStudentStatus(startDate, endDate, targetDate = todayKyiv()) {
   if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) return "Архів";
 
@@ -21,6 +23,7 @@ function getStudentStatus(startDate, endDate, targetDate = todayKyiv()) {
   return "Архів";
 }
 
+// Сортування: спершу за статусом, потім за ПІБ (українська абетка)
 function compareByStatusThenName(a, b) {
   const diff =
     (STATUS_PRIORITY[a.status] || 99) - (STATUS_PRIORITY[b.status] || 99);

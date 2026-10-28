@@ -1,5 +1,10 @@
+// Інструктори (/api/instructors): картки, пароль для входу (зберігається в
+// обліковому записі Account), журнал курсантів і заняття на автодромі для
+// кабінету інструктора.
+
 const express = require("express");
 const Instructor = require("../models/Instructor");
+const Account = require("../models/Account");
 const Student = require("../models/Student");
 const PlannedSchedule = require("../models/PlannedSchedule");
 const Schedule = require("../models/Schedule");
@@ -12,6 +17,8 @@ const {
   syncInstructorReminders,
   syncVehicleReminders,
 } = require("../utils/systemReminderSync");
+const { setAccountPassword, saveAccount } = require("../utils/accounts");
+const { withTransaction } = require("../utils/transaction");
 const { DRIVING_CATEGORIES } = require("../config/categories");
 const { todayKyiv, addMonths, isValidDateStr } = require("../utils/dates");
 const {
@@ -27,10 +34,10 @@ const {
 
 const router = express.Router();
 
-// Публічний список (потрібен на сторінці входу): лише ПІБ та категорії,
-// без pinCode
+// Список інструкторів (ПІБ і категорії) для будь-якого авторизованого користувача
 router.get(
   "/",
+  authMiddleware,
   asyncHandler(async (req, res) => {
     const instructors = await Instructor.find({})
       .select("fullName certificate")
@@ -42,8 +49,7 @@ router.get(
 
 const STAFF_FIELDS = "fullName certificate medicalExamUntil sanitaryBookUntil";
 
-// Список для адміна / бухгалтера: разом зі строками документів (медогляд,
-// санітарна книжка). Публічний список вище цих даних не віддає.
+// Список для адміна / бухгалтера разом зі строками документів
 router.get(
   "/staff",
   authMiddleware,
@@ -62,30 +68,23 @@ const DOCUMENT_FIELDS = {
   sanitaryBookUntil: "санітарної книжки",
 };
 
-const isValidPin = (value) => /^\d{6}$/.test(value || "");
-
-// Поля картки інструктора з тіла запиту. ПІБ задається лише при створенні
-// (за ПІБ інструктор входить у кабінет). PIN обов'язковий при створенні, а
-// при редагуванні — необов'язковий: якщо передано, PIN змінюється. Решта
-// полів при редагуванні — лише ті, що прийшли в запиті.
+// Поля картки з тіла запиту. При створенні обов'язкові ПІБ і пароль; при
+// редагуванні змінюються лише передані поля. Пароль повертається окремо,
+// бо зберігається в обліковому записі (Account), а не в картці
 function parseInstructorBody(body, { isNew }) {
   const data = {};
 
-  if (isNew) {
+  if (isNew || body.fullName !== undefined) {
     const fullName = asString(body.fullName)?.trim().replace(/\s+/g, " ");
     if (!fullName) throw badRequest("Вкажіть ПІБ інструктора");
     data.fullName = fullName.slice(0, 150);
   }
 
-  const pinCode = asString(body.pinCode);
-  if (isNew || pinCode) {
-    if (!isValidPin(pinCode)) throw badRequest("PIN має складатися з 6 цифр");
-    data.pinCode = pinCode;
-  }
+  const password = asString(body.password) || undefined;
+  if (isNew && !password) throw badRequest("Вкажіть пароль інструктора");
 
   if (body.certificate !== undefined || isNew) {
     const list = Array.isArray(body.certificate) ? body.certificate : [];
-    // Порядок як у довіднику (A1, A, B, …), без дублів і невідомих значень
     data.certificate = DRIVING_CATEGORIES.filter((c) => list.includes(c));
   }
 
@@ -96,9 +95,17 @@ function parseInstructorBody(body, { isNew }) {
     data[field] = value;
   }
 
-  return data;
+  return { data, password };
 }
 
+// Чи є інструктор з таким ПІБ (без урахування регістру), крім exceptId
+const fullNameTaken = (fullName, exceptId) =>
+  Instructor.exists({
+    fullName: { $regex: `^\\s*${escapeRegex(fullName)}\\s*$`, $options: "i" },
+    ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+  });
+
+// Поля картки для відповіді персоналу
 const pickStaffFields = (instructor) => ({
   _id: instructor._id,
   fullName: instructor.fullName,
@@ -107,28 +114,39 @@ const pickStaffFields = (instructor) => ({
   sanitaryBookUntil: instructor.sanitaryBookUntil,
 });
 
-// Додати інструктора (адмін або бухгалтер)
+// Додати інструктора разом з обліковим записом для входу (адмін, бухгалтер).
+// Пароль перевіряється до збереження картки, щоб не лишити інструктора без входу
 router.post(
   "/",
   authMiddleware,
   requireRole.staff,
   asyncHandler(async (req, res) => {
-    const data = parseInstructorBody(req.body, { isNew: true });
+    const { data, password } = parseInstructorBody(req.body, { isNew: true });
+    if (await fullNameTaken(data.fullName)) {
+      throw conflict(`Інструктор "${data.fullName}" вже існує`);
+    }
 
-    // Вхід у кабінет — за ПІБ, тож однакових ПІБ бути не може
-    const duplicate = await Instructor.exists({
-      fullName: { $regex: `^\\s*${escapeRegex(data.fullName)}\\s*$`, $options: "i" },
+    const instructor = new Instructor(data);
+    const account = new Account({
+      role: "instructor",
+      fullName: instructor.fullName,
+      instructorId: instructor._id,
     });
-    if (duplicate) throw conflict(`Інструктор "${data.fullName}" вже існує`);
+    await setAccountPassword(account, password);
 
-    const instructor = await Instructor.create(data);
-    await syncInstructorReminders(instructor);
+    // Картка, обліковий запис і нагадування — разом або нічого
+    await withTransaction(async () => {
+      await instructor.save();
+      await saveAccount(account);
+      await syncInstructorReminders(instructor);
+    });
     res.status(201).json({ success: true, instructor: pickStaffFields(instructor) });
   })
 );
 
-// Редагувати категорії, строки документів і PIN (адмін або бухгалтер).
-// Після збереження оновлюються автоматичні нагадування.
+// Редагувати ПІБ, категорії, строки документів і пароль (адмін, бухгалтер).
+// Новий пароль завершує всі сесії інструктора; після збереження оновлюються
+// автоматичні нагадування
 router.put(
   "/:id",
   authMiddleware,
@@ -137,28 +155,35 @@ router.put(
     const { id } = req.params;
     if (!isObjectId(id)) throw badRequest("Некоректний ID інструктора");
 
-    const data = parseInstructorBody(req.body, { isNew: false });
+    const { data, password } = parseInstructorBody(req.body, { isNew: false });
     const instructor = await Instructor.findById(id);
     if (!instructor) throw notFound("Інструктора не знайдено");
+    if (data.fullName && (await fullNameTaken(data.fullName, id))) {
+      throw conflict(`Інструктор "${data.fullName}" вже існує`);
+    }
 
-    // Через save(), а не findByIdAndUpdate: лише так спрацьовує pre-save
-    // хук моделі — він хешує новий PIN і збільшує tokenVersion, тож усі
-    // старі сесії інструктора завершуються
+    const account =
+      (await Account.findOne({ instructorId: id })) ||
+      new Account({ role: "instructor", fullName: instructor.fullName, instructorId: id });
+    if (password) await setAccountPassword(account, password);
+
     instructor.set(data);
-    await instructor.save();
-
-    await syncInstructorReminders(instructor);
+    account.fullName = instructor.fullName;
+    await withTransaction(async () => {
+      await instructor.save();
+      await saveAccount(account);
+      await syncInstructorReminders(instructor);
+    });
     res.status(200).json({
       success: true,
       instructor: pickStaffFields(instructor),
-      pinChanged: Boolean(data.pinCode),
+      passwordChanged: Boolean(password),
     });
   })
 );
 
-// Прибирає посилання на видаленого інструктора: з карток курсантів,
-// відповідальних за ТЗ і з нагадувань. Минулі заняття в графіках
-// лишаються як історія.
+// Прибирає посилання на видаленого інструктора з курсантів, ТЗ і нагадувань.
+// Минулі заняття в графіках лишаються як історія
 async function removeInstructorReferences(id) {
   const identity = `instructor:${id}`;
 
@@ -179,12 +204,12 @@ async function removeInstructorReferences(id) {
     { assignees: identity },
     { $pull: { assignees: identity, viewerStates: { identity } } }
   );
-  // Картки, у яких не лишилось жодного виконавця, нікому не потрібні
+  // Картки без жодного виконавця нікому не потрібні
   await Reminder.deleteMany({ assignees: { $size: 0 } });
 }
 
-// Видалити інструктора — тільки адмін. Не можна, поки в нього є
-// заплановані заняття від сьогодні (спочатку їх треба передати іншому).
+// Видалити інструктора (лише адмін). Не можна, поки є майбутні заняття:
+// їх спершу треба передати іншому інструктору
 router.delete(
   "/:id",
   authMiddleware,
@@ -210,15 +235,18 @@ router.delete(
       );
     }
 
-    await Instructor.deleteOne({ _id: id });
-    await removeInstructorReferences(id);
+    // Картка, обліковий запис і всі посилання прибираються разом або нічого
+    await withTransaction(async () => {
+      await Instructor.deleteOne({ _id: id });
+      await Account.deleteOne({ instructorId: id });
+      await removeInstructorReferences(id);
+    });
     res.status(200).json({ success: true, message: "Інструктора видалено" });
   })
 );
 
-// Заняття на автодромі в плановому графіку поточного інструктора на дату.
-// Інструктор не має доступу до самого планового графіка — повертаємо лише
-// час занять для попередження в кабінеті.
+// Час занять на автодромі в плановому графіку поточного інструктора —
+// для попередження в кабінеті (сам плановий графік інструктору недоступний)
 router.get(
   "/me/autodrome",
   authMiddleware,
@@ -240,10 +268,8 @@ router.get(
   })
 );
 
-// Журнал студентів, закріплених за інструктором.
-// Показуємо: Активних, тих хто Очікує, і Неактивних, якщо дата закінчення
-// навчання була не більше ніж місяць тому. Інструктор бачить лише свій
-// журнал, адмін — будь-який.
+// Журнал курсантів інструктора: активні, ті, що очікують, і ті, хто закінчив
+// не більше місяця тому. Інструктор бачить лише свій журнал
 router.get(
   "/:id/students",
   authMiddleware,
@@ -276,7 +302,7 @@ router.get(
       .map((s) => ({
         ...s,
         status: getStudentStatus(s.startDate, s.endDate, today),
-        // Перший інструктор у списку вважається основним для курсанта
+        // Перший інструктор у списку курсанта — основний
         isPrimary: (s.instructorIds || [])[0]?.toString() === id,
       }))
       .filter((s) => {

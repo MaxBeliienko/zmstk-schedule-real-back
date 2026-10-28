@@ -1,3 +1,6 @@
+// Інтеграційні тести курсантів: створення, оплати та історія передплат,
+// права адміна й бухгалтера, видалення разом із заняттями.
+
 const { describe, test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const h = require("../helpers");

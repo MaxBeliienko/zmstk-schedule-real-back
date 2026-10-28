@@ -1,3 +1,9 @@
+// Оформлення Word-документа "Графік черговості навчання водінню" за моделлю з
+// utils/groupSchedule.js. Повторює паперовий бланк: А4 альбомна, Times New
+// Roman, шапка "ЗАТВЕРДЖУЮ", таблиці по 14 навчальних днів, кожна з нової
+// сторінки. Одиниці docx: шрифт — у півпунктах (28 = 14 pt), відстані — у
+// DXA (1/20 pt, 567 ≈ 1 см).
+
 const {
   AlignmentType,
   Document,
@@ -18,29 +24,23 @@ const {
 } = require("docx");
 const { DOCUMENT_APPROVER } = require("../config/documents");
 
-// Оформлення документа "Графік черговості навчання водінню" — повторює
-// паперовий бланк автошколи: А4 альбомна, Times New Roman, шапка
-// "ЗАТВЕРДЖУЮ", таблиці по 14 навчальних днів (кожна — з нової сторінки).
-// Розміри в docx: шрифт — у півпунктах (28 = 14 pt), відстані — у DXA
-// (1/20 pt, 567 ≈ 1 см).
-
+// Ширини колонок у DXA; остання колонка дня трохи вужча, щоб сума зійшлася
 const DAYS_PER_TABLE = 14;
 const NUMBER_COL = 537;
 const NAME_COL = 2508;
-// 14 колонок днів = 13 155 DXA; остання трохи вужча, щоб сума зійшлася
 const DAY_COLS = [...Array(DAYS_PER_TABLE - 1).fill(940), 935];
 const TABLE_WIDTH = NUMBER_COL + NAME_COL + DAY_COLS.reduce((a, b) => a + b, 0);
 const DAYS_WIDTH = TABLE_WIDTH - NUMBER_COL - NAME_COL;
 
+// Кольори: дати й заняття — червоні, смуги курсантів — сірі, автодром —
+// зелений, рядки "Автомобіль ..." — по черзі з набору, як у бланку
 const COLOR_DATE = "FF0000";
 const COLOR_LESSON = "C00000";
-// Смуги курсантів по черзі (білий / світло-сірий) — щоб легше читати рядки
 const STRIPE_FILL = "E7E6E6";
-// Заняття на автодромі — окремий колір клітинок (перекриває смугу курсанта)
 const AUTODROME_FILL = "C6E0B4";
-// Кольори рядків "Автомобіль ..." по черзі — як у паперовому графіку
 const VEHICLE_COLORS = ["4F6228", "403152", "984806", "17365D"];
 
+// Короткі конструктори елементів docx
 const text = (value, opts = {}) => new TextRun({ text: value, ...opts });
 
 const para = (children, opts = {}) =>
@@ -50,6 +50,7 @@ const para = (children, opts = {}) =>
     children: Array.isArray(children) ? children : [children],
   });
 
+// Клітинка таблиці з шириною, об'єднанням, заливкою та вирівнюванням
 function cell(paragraphs, { width, span, merge, fill, vAlign = VerticalAlign.CENTER } = {}) {
   return new TableCell({
     width: { size: width, type: WidthType.DXA },
@@ -69,8 +70,8 @@ const row = (cells, { height, header } = {}) =>
     height: height ? { value: height, rule: HeightRule.ATLEAST } : undefined,
   });
 
-// Клітинки днів одного рядка; недостачу в останній таблиці доповнюємо порожніми.
-// fill — колір або функція (day) => колір для окремої клітинки
+// Клітинки днів одного рядка; останню таблицю доповнює порожніми до 14.
+// fill — колір або функція (day) => колір
 const dayCells = (days, render, fill) =>
   DAY_COLS.map((width, i) => {
     const day = days[i];
@@ -78,6 +79,7 @@ const dayCells = (days, render, fill) =>
     return cell(day ? render(day, i) : [], { width, fill: dayFill });
   });
 
+// Шапка таблиці: №, ПІБ, номери й дати навчальних днів
 function headerRows(days, firstDayNumber) {
   const numberHeader = (merge, children = []) =>
     cell(children, { width: NUMBER_COL, merge });
@@ -129,8 +131,8 @@ function headerRows(days, firstDayNumber) {
   ];
 }
 
-// Без причепа — один рядок "Автомобіль ..., інструктор ...". З причепом —
-// авто першим рядком, а причіп та інструктор разом другим (не розриваються)
+// Рядок "Автомобіль ..., інструктор ...". З причепом — два рядки:
+// авто, потім причіп разом з інструктором
 function vehicleRow(vehicle, color) {
   const style = { bold: true, italics: true, color, size: 28 };
   const vehicleRun = text(
@@ -166,6 +168,8 @@ function vehicleRow(vehicle, color) {
 const lessonText = (value, extra = {}) =>
   text(value, { size: 20, color: COLOR_LESSON, ...extra });
 
+// Два рядки на курсанта: час занять і вправи. Парні курсанти — на сірому
+// тлі, дні з автодромом — зеленим
 function studentRows(student, days) {
   const timeCell = (day) =>
     (student?.cells[day.date]?.times || []).map((t) => para(lessonText(t)));
@@ -174,7 +178,6 @@ function studentRows(student, days) {
       para(lessonText(ex.code, { bold: ex.code === "ІСПИТ" })),
       ...ex.notes.map((note) => para(lessonText(note, { size: 18, bold: true }))),
     ]);
-  // Парні курсанти — на сірому тлі; номер наскрізний, тож смуги однакові на всіх сторінках
   const fill = student && student.number % 2 === 0 ? STRIPE_FILL : undefined;
   const dayFill = (day) => (student?.cells[day.date]?.isAutodrome ? AUTODROME_FILL : fill);
 
@@ -207,31 +210,31 @@ function studentRows(student, days) {
   ];
 }
 
+// Одна таблиця (до 14 днів): шапка, групи авто з курсантами і порожній
+// рядок унизу, щоб дописати курсанта від руки
 function scheduleTable(model, days, firstDayNumber) {
   const rows = [...headerRows(days, firstDayNumber)];
   model.vehicles.forEach((vehicle, i) => {
     rows.push(vehicleRow(vehicle, VEHICLE_COLORS[i % VEHICLE_COLORS.length]));
     for (const student of vehicle.students) rows.push(...studentRows(student, days));
   });
-  // Порожній рядок унизу — дописати курсанта від руки, як у бланку
   rows.push(...studentRows(null, days));
 
   return new Table({
     width: { size: TABLE_WIDTH, type: WidthType.DXA },
     columnWidths: [NUMBER_COL, NAME_COL, ...DAY_COLS],
     layout: TableLayoutType.FIXED,
-    // Таблиця ширша за поля сторінки — як у паперовому бланку
     indent: { size: -792, type: WidthType.DXA },
     rows,
   });
 }
 
+// Назва документа, група, період і блок "ЗАТВЕРДЖУЮ" праворуч
 function titleBlock(model) {
   const bold = (value, size) => text(value, { bold: true, size });
   const underlined = (value, size) =>
     text(value, { bold: true, size, underline: { type: UnderlineType.SINGLE } });
   const categoryWord = model.categories.length > 1 ? "категорій" : "категорії";
-  // Блок "ЗАТВЕРДЖУЮ" — у правій частині сторінки
   const approver = (value, size) =>
     para(bold(value, size), { alignment: AlignmentType.LEFT, indent: { left: 9200 } });
 
@@ -267,13 +270,12 @@ function legend() {
   });
 }
 
+// Збирає документ і повертає його як Buffer (.docx) для відповіді API
 async function renderGroupScheduleDocx(model) {
   const children = [...titleBlock(model)];
-  // Хоча б одна таблиця — навіть якщо днів немає (порожній бланк)
   const chunks = Math.max(1, Math.ceil(model.days.length / DAYS_PER_TABLE));
   for (let i = 0; i < chunks; i += 1) {
     const days = model.days.slice(i * DAYS_PER_TABLE, (i + 1) * DAYS_PER_TABLE);
-    // Наступна частина таблиці — з нової сторінки
     if (i > 0) children.push(new Paragraph({ pageBreakBefore: true, children: [] }));
     children.push(scheduleTable(model, days, i * DAYS_PER_TABLE + 1));
   }
@@ -289,7 +291,6 @@ async function renderGroupScheduleDocx(model) {
       {
         properties: {
           page: {
-            // docx сам міняє ширину й висоту місцями для альбомної орієнтації
             size: { width: 11906, height: 16838, orientation: PageOrientation.LANDSCAPE },
             margin: { top: 142, right: 1134, bottom: 360, left: 1134 },
           },

@@ -1,3 +1,6 @@
+// Інтеграційні тести планового графіка: конфлікти ТЗ / курсанта /
+// інструктора, межі дня, звіт по ТЗ і права доступу.
+
 const { describe, test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const h = require("../helpers");
@@ -107,7 +110,6 @@ describe("Плановий графік: конфлікти бронювання
 
   test("заняття поза сіткою 08:00–21:00 не приймається", async () => {
     assert.equal((await create(lesson({ startTime: "07:30" }))).status, 400);
-    // 2-годинна вправа о 20:00 закінчилась би о 22:00
     assert.equal((await create(lesson({ exerciseCode: "2.1", startTime: "20:00" }))).status, 400);
   });
 
@@ -138,7 +140,6 @@ describe("Плановий графік: конфлікти бронювання
         startTime: "12:00",
       })
     );
-    // Заняття поза періодом не потрапляє у звіт
     await create(lesson({ exerciseCode: "1.2", date: "2026-07-20" }));
 
     const report = (vehicleId) =>

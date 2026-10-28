@@ -1,3 +1,5 @@
+// Довідник вправ (/api/admin/exercises) — потрібен формі планового графіка у фронтенді.
+
 const express = require("express");
 const ExerciseCategory = require("../../models/Exercise");
 const requireRole = require("../../middlewares/requireRole");
@@ -5,7 +7,7 @@ const { asyncHandler } = require("../../utils/http");
 
 const router = express.Router();
 
-// Довідник вправ по категоріях (потрібен для планового графіка)
+// Усі програми категорій з вправами (лише адмін)
 router.get(
   "/exercises",
   requireRole.admin,

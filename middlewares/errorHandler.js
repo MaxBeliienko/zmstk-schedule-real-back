@@ -1,8 +1,12 @@
+// Єдиний формат помилок API: { success: false, message, ... }.
+// Роути кидають HttpError (utils/http.js) або помилки Mongoose, а тут вони
+// перетворюються на відповідь з потрібним статусом. Деталі 500-х помилок
+// пишуться в лог, але не віддаються клієнту.
+
 const mongoose = require("mongoose");
 const { HttpError } = require("../utils/http");
 
-// Єдиний формат помилок для всього API: { success: false, message, ... }.
-// Внутрішні деталі 500-х помилок пишемо в лог, але НЕ віддаємо клієнту.
+// Обробник помилок Express (саме 4 аргументи — так Express його розпізнає)
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
   if (err instanceof HttpError) {
@@ -31,7 +35,7 @@ function errorHandler(err, req, res, next) {
       .json({ success: false, message: "Такий запис уже існує" });
   }
 
-  // Запис змінив хтось інший між читанням і збереженням
+  // Запис змінив хтось інший між читанням і збереженням (optimisticConcurrency у Student)
   if (err instanceof mongoose.Error.VersionError) {
     return res.status(409).json({
       success: false,
@@ -39,6 +43,7 @@ function errorHandler(err, req, res, next) {
     });
   }
 
+  // Помилки розбору тіла запиту (express.json)
   if (err?.type === "entity.parse.failed") {
     return res
       .status(400)
@@ -51,7 +56,6 @@ function errorHandler(err, req, res, next) {
       .json({ success: false, message: "Запит завеликий" });
   }
 
-  // Інші очікувані помилки body-parser тощо (4xx з прапорцем expose)
   if (err?.expose && err.status >= 400 && err.status < 500) {
     return res.status(err.status).json({ success: false, message: err.message });
   }
@@ -62,6 +66,7 @@ function errorHandler(err, req, res, next) {
     .json({ success: false, message: "Внутрішня помилка сервера" });
 }
 
+// Відповідь для невідомого маршруту
 function notFoundHandler(req, res) {
   res.status(404).json({ success: false, message: "Маршрут не знайдено" });
 }

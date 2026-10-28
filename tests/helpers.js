@@ -1,34 +1,36 @@
-// Спільне для інтеграційних тестів API.
-//
-// Кожен тестовий файл піднімає власну тимчасову MongoDB у пам'яті
-// (mongodb-memory-server): реальна база з .env НЕ використовується і не
-// змінюється. Між тестами колекції очищаються.
+// Спільне для інтеграційних тестів API. Кожен тестовий файл піднімає власну
+// тимчасову MongoDB у пам'яті (replica set з одного вузла — як на Atlas,
+// щоб працювали транзакції): справжня база з .env не використовується.
+// Між тестами колекції очищаються.
 
-// Змінні середовища — до підключення app.js (він перевіряє JWT_SECRET)
+// Змінні середовища задаються до підключення app.js (він перевіряє секрети).
+// TRUST_PROXY=1 дає змогу імітувати різні IP заголовком X-Forwarded-For
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret-at-least-16-chars";
+process.env.PASSWORD_PEPPER = "test-pepper-at-least-16-chars";
 process.env.ADMIN_PASSWORD = "admin-pass";
 process.env.ACCOUNTANT_PASSWORD = "accountant-pass";
-// Як на Render: один проксі. Дає змогу в тестах імітувати різні IP
-// заголовком X-Forwarded-For (кожен тест — своя IP, ліміти не змішуються)
 process.env.TRUST_PROXY = "1";
 
 const mongoose = require("mongoose");
-const { MongoMemoryServer } = require("mongodb-memory-server-core");
+const { MongoMemoryReplSet } = require("mongodb-memory-server-core");
 const request = require("supertest");
 const app = require("../app");
 
 const Instructor = require("../models/Instructor");
+const Account = require("../models/Account");
+const { derivePasswordKey } = require("../utils/passwords");
 const Student = require("../models/Student");
 const Vehicle = require("../models/Vehicle");
 const ExerciseCategory = require("../models/Exercise");
 
 let mongod;
 
+// Запуск тимчасової БД; унікальні індекси створюються одразу — вони частина
+// захисту від конфліктів
 async function startDb() {
-  mongod = await MongoMemoryServer.create();
+  mongod = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongod.getUri());
-  // Унікальні індекси — частина захисту від конфліктів, тож створюємо їх
   await Promise.all(Object.values(mongoose.models).map((m) => m.syncIndexes()));
 }
 
@@ -37,38 +39,55 @@ async function stopDb() {
   if (mongod) await mongod.stop();
 }
 
+// Очищення всіх колекцій між тестами
 async function clearDb() {
   const collections = await mongoose.connection.db.collections();
   await Promise.all(collections.map((c) => c.deleteMany({})));
 }
 
 let ipCounter = 0;
-// Нова "IP-адреса" для кожного виклику
+// Нова "IP-адреса" для кожного входу, щоб ліміти спроб не змішувались
 const nextIp = () => `10.0.${Math.floor(++ipCounter / 250)}.${ipCounter % 250 + 1}`;
 
 const api = () => request(app);
 
+// Паролі тестових адміна й бухгалтера
+const STAFF_PASSWORDS = { admin: "admin-pass-1", accountant: "accountant-pass-1" };
+
+// Вхід за паролем з окремої IP
+async function login(password, ip = nextIp()) {
+  return api().post("/api/auth/login").set("X-Forwarded-For", ip).send({ password });
+}
+
+// Обліковий запис з готовим ключем пароля (без перевірки довжини)
+async function createAccount(data, password) {
+  return Account.create({ ...data, passwordKey: await derivePasswordKey(password) });
+}
+
+// Токен адміна / бухгалтера; обліковий запис створюється за потреби
 async function staffToken(role = "admin") {
-  const password = role === "admin" ? "admin-pass" : "accountant-pass";
-  const res = await api()
-    .post("/api/auth/staff-login")
-    .set("X-Forwarded-For", nextIp())
-    .send({ password });
+  const password = STAFF_PASSWORDS[role];
+  if (!(await Account.exists({ role, fullName: `Тест ${role}` }))) {
+    await createAccount({ role, fullName: `Тест ${role}` }, password);
+  }
+  const res = await login(password);
   if (res.status !== 200) throw new Error(`staff login failed: ${res.status}`);
   return res.body.token;
 }
 
-async function instructorLogin(fullName, pinCode, ip = nextIp()) {
-  return api()
-    .post("/api/auth/instructor-login")
-    .set("X-Forwarded-For", ip)
-    .send({ fullName, pinCode });
+// Інструктор з обліковим записом. Без пароля генерується унікальний —
+// однакових паролів у системі бути не може
+let instructorCounter = 0;
+async function createInstructor(
+  fullName = "Іваненко І.І.",
+  password = `instructor-${++instructorCounter}`
+) {
+  const instructor = await Instructor.create({ fullName, certificate: ["B"] });
+  await createAccount({ role: "instructor", fullName, instructorId: instructor._id }, password);
+  return instructor;
 }
 
-async function createInstructor(fullName = "Іваненко І.І.", pinCode = "123456") {
-  return Instructor.create({ fullName, pinCode, certificate: ["B"] });
-}
-
+// Тестові ТЗ і курсант з типовими даними (overrides — що змінити)
 async function createVehicle(overrides = {}) {
   return Vehicle.create({
     brand: "Renault",
@@ -90,7 +109,7 @@ async function createStudent(overrides = {}) {
   });
 }
 
-// Мінімальний довідник вправ: 1-годинна, 2-годинна (автодром) та іспит 0.5 год
+// Мінімальний довідник вправ категорії B: 1 год, 1 год, 2 год (автодром), іспит 0.5 год
 async function createExercises() {
   return ExerciseCategory.create({
     category: "B",
@@ -105,6 +124,7 @@ async function createExercises() {
   });
 }
 
+// Заголовок авторизації для supertest
 const auth = (token) => ({ Authorization: `Bearer ${token}` });
 
 module.exports = {
@@ -115,7 +135,9 @@ module.exports = {
   clearDb,
   nextIp,
   staffToken,
-  instructorLogin,
+  login,
+  createAccount,
+  STAFF_PASSWORDS,
   createInstructor,
   createVehicle,
   createStudent,

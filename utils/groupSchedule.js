@@ -1,12 +1,12 @@
+// Дані для документа "Графік черговості навчання водінню" групи: хто з
+// курсантів на якому авто, які навчальні дні і що в кожній клітинці.
+// Лише логіка, без оформлення Word (оформлення — utils/groupScheduleDocx.js).
+// Викликається з routes/admin/groupSchedule.js.
+
 const { addDays, parseDateOnly } = require("./dates");
 
-// Підготовка даних для документа "Графік черговості навчання водінню"
-// групи: хто з курсантів на якому авто, які навчальні дні і що в кожній
-// клітинці. Тут лише чиста логіка без форматування Word — її легко
-// перевірити окремо (оформлення — utils/groupScheduleDocx.js).
-
-// Робочі дні без жодного заняття, що йдуть підряд стільки разів і більше,
-// вважаємо перервою в навчанні (канікули, літо) і не показуємо в таблиці
+// Стільки і більше робочих днів поспіль без жодного заняття вважаються
+// перервою (канікули, літо) і в таблицю не потрапляють
 const BREAK_MIN_DAYS = 5;
 
 const MONTHS_GENITIVE = [
@@ -17,8 +17,7 @@ const MONTHS_GENITIVE = [
 const idOf = (value) => (value ? (value._id || value).toString() : null);
 const upper = (value) => String(value || "").toLocaleUpperCase("uk");
 
-// "Гаврилюк Юлія Петрівна" -> "ГАВРИЛЮК Ю.П."; вже скорочені ініціали
-// ("Гаврилюк Ю.П.") лишаються як є
+// "Гаврилюк Юлія Петрівна" -> "ГАВРИЛЮК Ю.П."; вже скорочені ініціали лишаються
 function shortName(fullName) {
   const [surname, ...rest] = String(fullName || "").trim().split(/\s+/).filter(Boolean);
   if (!surname) return "—";
@@ -32,7 +31,7 @@ function shortName(fullName) {
   return initials ? `${upper(surname)} ${initials}` : upper(surname);
 }
 
-// "15 ВЕРЕСНЯ 2026"
+// "2026-09-15" -> "15 ВЕРЕСНЯ 2026"
 function formatLongDate(dateStr) {
   const [y, m, d] = dateStr.split("-");
   return `${d} ${MONTHS_GENITIVE[Number(m) - 1]} ${y}`;
@@ -61,14 +60,13 @@ function mostFrequent(ids) {
   return best;
 }
 
-// Навчальні дні таблиці: робочі дні періоду (і вихідні, якщо в них є
-// заняття) без довгих перерв, коли в усієї групи немає жодного заняття
+// Навчальні дні таблиці: робочі дні періоду (і вихідні, якщо в них є заняття)
+// без довгих перерв. Якщо занять ще немає — порожній бланк на весь період
 function buildStudyDays(periodStart, periodEnd, lessonDates) {
   const candidates = [];
   for (let d = periodStart; d <= periodEnd; d = addDays(d, 1)) {
     if (!isWeekend(d) || lessonDates.has(d)) candidates.push(d);
   }
-  // Занять ще немає — порожній бланк на весь період
   if (lessonDates.size === 0) return candidates;
 
   const days = [];
@@ -86,15 +84,15 @@ function buildStudyDays(periodStart, periodEnd, lessonDates) {
   return days;
 }
 
-// students — курсанти групи (lean), lessons — їхні заняття з планового
-// графіка з populate інструктора, ТЗ і причепа
+// Модель документа. students — курсанти групи, lessons — їхні заняття з
+// populate інструктора, ТЗ і причепа. Курсанти групуються за основним авто
+// (на якому в них найбільше занять)
 function buildGroupSchedule({ group, students, lessons }) {
   const lessonsByStudent = new Map(students.map((s) => [s._id.toString(), []]));
   for (const lesson of lessons) {
     lessonsByStudent.get(idOf(lesson.studentId))?.push(lesson);
   }
 
-  // Основне авто курсанта — на якому в нього найбільше занять
   const vehicleGroups = new Map();
   for (const student of students) {
     const own = lessonsByStudent
@@ -114,7 +112,6 @@ function buildGroupSchedule({ group, students, lessons }) {
     const onMain = vg.lessons.filter((l) => idOf(l.vehicleId) === vg.mainVehicleId);
     const vehicle = onMain[0]?.vehicleId || null;
 
-    // Інструктори, які їздять на цьому авто (найактивніший — першим)
     const counts = new Map();
     const instructorsById = new Map();
     for (const l of onMain) {
@@ -123,9 +120,10 @@ function buildGroupSchedule({ group, students, lessons }) {
       counts.set(id, (counts.get(id) || 0) + 1);
       instructorsById.set(id, l.instructorId);
     }
+    // Інструктори цього авто: найактивніший — першим
     const instructorIds = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
 
-    // Причіп показуємо, якщо хоч одна вправа курсантів цього авто — з причепом
+    // Причіп показуємо, якщо хоч одне заняття курсантів цього авто — з причепом
     const trailerId = mostFrequent(vg.lessons.map((l) => idOf(l.trailerId)));
     const trailer = trailerId
       ? vg.lessons.find((l) => idOf(l.trailerId) === trailerId).trailerId
@@ -163,7 +161,6 @@ function buildGroupSchedule({ group, students, lessons }) {
     lessonDates
   );
 
-  // Клітинки: рядок часу і рядок вправи (з позначками) на кожен день
   let number = 0;
   const vehicleRows = vehicles.map((v) => ({
     vehicleLabel: v.vehicleLabel,
@@ -179,13 +176,12 @@ function buildGroupSchedule({ group, students, lessons }) {
       const cells = {};
       for (const [date, dayLessons] of byDate) {
         cells[date] = {
-          // Хоча б одне заняття дня на автодромі — клітинки дня заливаються кольором
+          // Хоча б одне заняття дня на автодромі — клітинка заливається кольором
           isAutodrome: dayLessons.some((l) => l.isAutodrome),
           times: dayLessons.map((l) => formatTimeRange(l.startTime, l.endTime)),
-          // Як у паперовому графіку: заняття з "чужим" інструктором — його
-          // прізвище скорочено поруч з вправою ("2.2 СТЕБ"), на іншому авто —
-          // марка нижче ("DACIA"), з причепом — "(з прич.)"
           exercises: dayLessons.map((l) => {
+            // Як у паперовому графіку: "чужий" інструктор — скорочене прізвище поруч з
+            // вправою ("2.2 СТЕБ"), інше авто — марка ("DACIA"), з причепом — "(з прич.)"
             let code = l.isExam ? "ІСПИТ" : l.exerciseCode;
             if (idOf(l.instructorId) && !v.instructorIds.has(idOf(l.instructorId))) {
               code += ` ${upper(l.instructorId.fullName).trim().split(/\s+/)[0].slice(0, 4)}`;

@@ -1,5 +1,7 @@
-// Використовується ПІСЛЯ authMiddleware. Пропускає лише перелічені ролі,
-// напр. requireRole("admin", "accountant").
+// Перевірка ролі користувача. Використовується після authMiddleware, який
+// кладе роль у req.user.
+
+// Пропускає лише перелічені ролі, інакше 403. Напр. requireRole("admin", "accountant")
 const requireRole = (...roles) => (req, res, next) => {
   if (!roles.includes(req.user?.role)) {
     return res.status(403).json({
@@ -10,7 +12,7 @@ const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// Готові комбінації ролей, щоб не дублювати списки по роутах
+// Готові комбінації, щоб не повторювати списки ролей у роутах
 requireRole.admin = requireRole("admin");
 requireRole.staff = requireRole("admin", "accountant");
 

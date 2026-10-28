@@ -1,3 +1,5 @@
+// Модульні тести статусу курсанта (utils/studentStatus.js).
+
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -13,7 +15,6 @@ test("статус курсанта залежить від дати відно�
   assert.equal(getStudentStatus(START, END, "2026-03-01"), "Активний");
   assert.equal(getStudentStatus(START, END, "2026-05-31"), "Активний");
   assert.equal(getStudentStatus(START, END, "2026-06-01"), "Неактивний");
-  // Рівно 6 місяців після закінчення — ще неактивний, далі — архів
   assert.equal(getStudentStatus(START, END, "2026-11-30"), "Неактивний");
   assert.equal(getStudentStatus(START, END, "2026-12-01"), "Архів");
 });

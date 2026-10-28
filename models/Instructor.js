@@ -1,36 +1,15 @@
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
 
+// Картка інструктора: ПІБ, категорії посвідчення та строки документів.
+// Пароль для входу зберігається в окремому обліковому записі (models/Account.js,
+// поле instructorId). Для дат документів автоматично створюються нагадування
+// в календарі (utils/systemReminderSync.js).
 const instructorSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
-  pinCode: { type: String, required: true },
   certificate: [{ type: String }],
-  // Документи інструктора: "дійсне до" (YYYY-MM-DD, "" — не вказано).
-  // Для кожної дати автоматично створюється нагадування (utils/systemReminderSync.js)
+  // Дати "дійсне до" у форматі YYYY-MM-DD ("" — не вказано)
   medicalExamUntil: { type: String, default: "" },
   sanitaryBookUntil: { type: String, default: "" },
-  // Версія токенів: збільшується при зміні PIN — усі видані раніше токени
-  // інструктора перестають працювати (authMiddleware звіряє версію)
-  tokenVersion: { type: Number, default: 0 },
 });
-
-const isBcryptHash = (value) =>
-  typeof value === "string" && /^\$2[aby]\$/.test(value);
-
-instructorSchema.pre("save", async function (next) {
-  if (this.isModified("pinCode")) {
-    if (!isBcryptHash(this.pinCode)) {
-      this.pinCode = await bcrypt.hash(this.pinCode, 10);
-    }
-    // Новий PIN = нова версія токенів. Виняток — лінива міграція
-    // plaintext -> bcrypt (PIN той самий, сесії відкликати не треба)
-    if (!this.isNew && !this.$locals.keepTokenVersion) {
-      this.tokenVersion = (this.tokenVersion || 0) + 1;
-    }
-  }
-  next();
-});
-
-instructorSchema.statics.isBcryptHash = isBcryptHash;
 
 module.exports = mongoose.model("Instructor", instructorSchema);

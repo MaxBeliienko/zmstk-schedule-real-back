@@ -1,3 +1,7 @@
+// Реальний графік: що інструктор фактично робив у кожну годину дня (ТЗ,
+// місце, курсант або "у гаражі"). Заповнює сам інструктор у кабінеті
+// (routes/schedule.js).
+
 const mongoose = require("mongoose");
 
 const ScheduleSchema = new mongoose.Schema({
@@ -21,13 +25,13 @@ const ScheduleSchema = new mongoose.Schema({
 ScheduleSchema.index({ date: 1, timeSlot: 1 });
 
 ScheduleSchema.index(
+  // Один запис на інструктора на годину
   { date: 1, instructorId: 1, timeSlot: 1 },
   { unique: true }
 );
 
-// Одне авто — лише в одного інструктора на слот (гарантія на рівні БД,
-// навіть якщо два збереження прийшли одночасно на різні інстанси)
 ScheduleSchema.index(
+  // Одне авто в одну годину — лише в одного інструктора (гарантія на рівні БД)
   { date: 1, timeSlot: 1, vehicleId: 1 },
   { unique: true, partialFilterExpression: { vehicleId: { $type: "objectId" } } }
 );

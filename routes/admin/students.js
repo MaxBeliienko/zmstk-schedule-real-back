@@ -1,3 +1,7 @@
+// Курсанти (/api/admin/students...): список, картка, оплати, зведена таблиця
+// та статистика занять. Адмін і бухгалтер редагують однаково; видаляти й
+// бачити зведену таблицю може лише адмін.
+
 const express = require("express");
 const Student = require("../../models/Student");
 const Instructor = require("../../models/Instructor");
@@ -17,14 +21,16 @@ const {
   escapeRegex,
   asString,
 } = require("../../utils/http");
+const { withTransaction } = require("../../utils/transaction");
+
+const { STUDY_TYPES } = require("../../config/categories");
 
 const router = express.Router();
 
-const STUDY_TYPES = ["Теорія", "Практика"];
+// Роль автора у записі історії передплат
 const HISTORY_ROLE = { admin: "Admin", accountant: "Accountant" };
 
-// Гроші зберігаємо з точністю до копійки. Від'ємні / нечислові значення —
-// помилка, а не мовчазний 0 (раніше так можна було випадково обнулити суму)
+// Гроші з точністю до копійки. Від'ємне чи нечислове значення — помилка, а не 0
 function parseMoney(value, label) {
   if (value === "" || value === null || value === undefined) return 0;
   const parsed = Number(String(value).replace(",", "."));
@@ -34,18 +40,18 @@ function parseMoney(value, label) {
   return Math.round(parsed * 100) / 100;
 }
 
+// Лише id наявних інструкторів, без дублів; порядок зберігається (перший — основний)
 async function parseInstructorIds(value) {
   if (!Array.isArray(value)) return [];
   const ids = [...new Set(value.filter(isObjectId))];
   if (ids.length === 0) return [];
   const existing = await Instructor.find({ _id: { $in: ids } }).select("_id").lean();
   const existingSet = new Set(existing.map((i) => i._id.toString()));
-  // Зберігаємо порядок: перший інструктор — основний
   return ids.filter((id) => existingSet.has(id));
 }
 
-// Поля, які можна змінювати в картці курсанта. Для PUT беремо лише ті,
-// що прийшли в запиті — поля, яких немає в тілі, лишаються без змін.
+// Поля курсанта з тіла запиту. requireAll — при створенні обов'язкові всі
+// основні поля; при редагуванні змінюються лише передані
 async function parseStudentBody(body, { requireAll }) {
   const data = {};
   const has = (field) => body[field] !== undefined || requireAll;
@@ -99,6 +105,7 @@ async function parseStudentBody(body, { requireAll }) {
   return data;
 }
 
+// Перевірки, що залежать від кількох полів одразу
 function assertStudentConsistency(student) {
   if (student.endDate <= student.startDate) {
     throw badRequest("Дата завершення має бути пізнішою за дату початку навчання!");
@@ -108,12 +115,8 @@ function assertStudentConsistency(student) {
   }
 }
 
-// ================= КУРСАНТИ =================
-
-// Список курсантів (адмін і бухгалтер).
-// endFrom / endTo (YYYY-MM-DD, обидва) — лише курсанти, у яких дата
-// закінчення навчання в цьому періоді (підрахунок випуску). З ними архів
-// завантажується завжди: випуск минулих років — це саме архівні курсанти.
+// Список курсантів. Без параметрів — без архіву (завершили > 6 міс. тому).
+// endFrom/endTo — курсанти, що закінчили навчання в цьому періоді (разом з архівом)
 router.get(
   "/students",
   requireRole.staff,
@@ -137,7 +140,6 @@ router.get(
     if (byEndDate) {
       query.endDate = { $gte: endFrom, $lte: endTo };
     } else if (!includeArchive) {
-      // Архів (завершили навчання > 6 міс. тому) відсікаємо ще в БД
       query.endDate = { $gte: addMonths(today, -6) };
     }
 
@@ -154,7 +156,7 @@ router.get(
   })
 );
 
-// Створення курсанта (адмін і бухгалтер)
+// Новий курсант; початкова передплата одразу пишеться в історію
 router.post(
   "/students",
   requireRole.staff,
@@ -170,6 +172,8 @@ router.post(
               amount: data.prepayment,
               delta: data.prepayment,
               role: HISTORY_ROLE[req.user.role],
+              accountId: req.user.accountId,
+              byName: req.user.fullName,
               createdAt: new Date(),
             },
           ]
@@ -180,8 +184,7 @@ router.post(
   })
 );
 
-// Редагування курсанта (адмін і бухгалтер мають рівні права; бухгалтеру
-// заборонене лише видалення)
+// Редагування курсанта. Зміна передплати записується в історію з автором
 router.put(
   "/students/:id",
   requireRole.staff,
@@ -197,13 +200,14 @@ router.put(
     student.set(data);
     assertStudentConsistency(student);
 
-    // Точний розрахунок різниці в копійках (без похибок IEEE 754)
     const delta = Math.round(((student.prepayment || 0) - oldPrep) * 100) / 100;
     if (delta !== 0) {
       student.prepaymentHistory.push({
         amount: student.prepayment,
         delta,
         role: HISTORY_ROLE[req.user.role],
+        accountId: req.user.accountId,
+        byName: req.user.fullName,
         createdAt: new Date(),
       });
     }
@@ -213,26 +217,25 @@ router.put(
   })
 );
 
-// Видалення курсанта — тільки адмін
+// Видалення курсанта разом з його плановими заняттями (лише адмін)
 router.delete(
   "/students/:id",
   requireRole.admin,
   asyncHandler(async (req, res) => {
     if (!isObjectId(req.params.id)) throw badRequest("Некоректний ID курсанта");
 
-    const deleted = await Student.findByIdAndDelete(req.params.id);
-    if (!deleted) throw notFound("Студента не знайдено");
-
-    // Також видаляємо всі заплановані заняття цього курсанта
-    await PlannedSchedule.deleteMany({ studentId: req.params.id });
+    // Курсант і його заплановані заняття видаляються разом або нічого
+    await withTransaction(async () => {
+      const deleted = await Student.findByIdAndDelete(req.params.id);
+      if (!deleted) throw notFound("Студента не знайдено");
+      await PlannedSchedule.deleteMany({ studentId: req.params.id });
+    });
 
     res.status(200).json({ success: true, message: "Студента успішно видалено" });
   })
 );
 
-// Зведена таблиця курсантів за період: курсанти напрямку "Практика", у
-// яких період навчання (startDate–endDate) перетинається з обраним
-// діапазоном. Тільки адмін.
+// Зведена таблиця: курсанти "Практика", чиє навчання перетинається з періодом
 router.get(
   "/students-summary",
   requireRole.admin,
@@ -256,7 +259,7 @@ router.get(
   })
 );
 
-// Детальна статистика занять курсанта за вправами
+// Статистика курсанта по кожній вправі програми: потрібні й заплановані години, заняття
 router.get(
   "/students/:id/details",
   requireRole.staff,

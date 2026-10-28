@@ -1,3 +1,5 @@
+// Точка входу сервера: підключення до MongoDB, міграції даних і запуск HTTP-сервера.
+
 require("dotenv").config();
 
 const mongoose = require("mongoose");
@@ -7,17 +9,18 @@ const app = require("./app");
 
 const PORT = process.env.PORT || 8080;
 
+// Запускає сервер. Міграції (migrations/index.js) виконуються до прийому запитів
 async function start() {
   await connectDB();
 
-  // Одноразові міграції даних (кожна виконується лише раз)
   await runMigrations();
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 
-  // Коректне завершення: дочікуємось активних запитів і закриваємо БД
+  // Коректна зупинка (Render надсилає SIGTERM при редеплої): дочікуємось
+  // активних запитів, закриваємо БД; через 10 с — примусовий вихід
   const shutdown = (signal) => {
     console.log(`${signal} отримано, зупиняємо сервер...`);
     server.close(async () => {

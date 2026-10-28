@@ -1,3 +1,7 @@
+// Розрахунок дат для календаря нагадувань: коли спрацьовує сповіщення
+// "нагадати за..." і на які дати припадає повторювана картка.
+// Використовується в routes/reminders.js.
+
 const {
   addDays,
   addMonths,
@@ -6,7 +10,7 @@ const {
   todayKyiv,
 } = require("./dates");
 
-// Підтримувані варіанти "нагадати за..." та відповідна кількість днів
+// Варіанти "нагадати за..." і відповідна кількість днів
 const OFFSET_DAYS = {
   "1_day": 1,
   "1_week": 7,
@@ -32,25 +36,22 @@ const REPEAT_LABELS = {
 
 const MAX_OFFSET_DAYS = Math.max(...Object.values(OFFSET_DAYS));
 
-// Скільки днів після дати події ще показуємо непідтверджене сповіщення
+// Скільки днів після події ще показуємо непідтверджене сповіщення
 const EVENT_GRACE_DAYS = 31;
 
 const isOffsetKey = (key) => typeof key === "string" && Object.hasOwn(OFFSET_DAYS, key);
 const isRepeatKey = (key) => typeof key === "string" && Object.hasOwn(REPEAT_LABELS, key);
 
-// Обчислює список дат-тригерів (YYYY-MM-DD) для події з датою `dateStr`
-// та обраними варіантами випередження `remindBefore`
+// Дати спрацювання сповіщень для події dateStr з обраними remindBefore
 function computeTriggerDates(dateStr, remindBefore = []) {
   return remindBefore
     .filter(isOffsetKey)
     .map((key) => addDays(dateStr, -OFFSET_DAYS[key]));
 }
 
-// Усі дати настання повторюваної картки в діапазоні [from, to] (включно).
-// Серія починається з seriesDate і ніколи не показується раніше за неї.
-// Для "кожен місяць" / "кожен рік" день притискається до кінця місяця
-// (31-ше число в лютому стане 28/29-м), але наступні місяці знову
-// повертаються до 31-го — рахуємо завжди від початкової дати.
+// Усі дати повторюваної картки в [from, to]. Серія не показується раніше
+// за seriesDate. Для "щомісяця" / "щороку" 31-ше число в коротшому місяці
+// стає останнім днем, а наступні місяці знову повертаються до 31-го
 function occurrencesBetween(seriesDate, repeat, from, to) {
   if (to < seriesDate || from > to) return [];
   const start = from < seriesDate ? seriesDate : from;
@@ -83,20 +84,20 @@ function occurrencesBetween(seriesDate, repeat, from, to) {
   return result;
 }
 
-// Дати подій, для яких сьогодні можуть спрацювати сповіщення — однаково
-// для разових і повторюваних карток: події від EVENT_GRACE_DAYS днів тому
-// (непідтверджене сповіщення ще показуємо) до найбільшого випередження вперед.
+// Діапазон подій, для яких сьогодні може спрацювати сповіщення
 const relevantWindow = (today) => ({
   from: addDays(today, -EVENT_GRACE_DAYS),
   to: addDays(today, MAX_OFFSET_DAYS),
 });
 
+// Дати подій картки в цьому діапазоні (однаково для разових і повторюваних)
 function relevantEventDates(reminder, today = todayKyiv()) {
   const { from, to } = relevantWindow(today);
   return occurrencesBetween(reminder.date, reminder.repeat || "none", from, to);
 }
 
-// Формує ідентифікатор поточного користувача на основі даних з JWT
+// Ідентифікатор користувача для виконавців карток: персонал — за роллю,
+// інструктор — за id ("role:admin", "instructor:<id>")
 function getIdentity(user) {
   if (user.role === "instructor") return `instructor:${user.id}`;
   return `role:${user.role}`;

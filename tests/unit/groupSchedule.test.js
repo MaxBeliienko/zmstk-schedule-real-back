@@ -1,3 +1,6 @@
+// Модульні тести Word-графіка групи: модель (utils/groupSchedule.js) і
+// створення .docx (utils/groupScheduleDocx.js).
+
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -23,22 +26,17 @@ test("формат часу й дат як у паперовому графік�
 });
 
 test("навчальні дні: без вихідних і без довгих перерв, але з вихідним, якщо в ньому заняття", () => {
-  // Пн 2026-06-01 … Пт 2026-06-26; заняття 1 і 26 червня → між ними
-  // 18 робочих днів без занять — це перерва, її не показуємо
   const days = buildStudyDays("2026-06-01", "2026-06-26", new Set(["2026-06-01", "2026-06-26"]));
   assert.deepEqual(days, ["2026-06-01", "2026-06-26"]);
 
-  // Короткий проміжок (менше 5 днів) лишається
   const short = buildStudyDays("2026-06-01", "2026-06-05", new Set(["2026-06-01", "2026-06-05"]));
   assert.equal(short.length, 5);
 
-  // Субота з заняттям потрапляє в таблицю
   const withSaturday = buildStudyDays("2026-06-05", "2026-06-08", new Set(["2026-06-06"]));
   assert.deepEqual(withSaturday, ["2026-06-05", "2026-06-06", "2026-06-08"]);
 });
 
-// Невеликий набір: двоє курсантів на одному авто, у другого одне заняття
-// на іншому авто з причепом і з "чужим" інструктором
+// Тестова група: курсанти, авто, інструктори та заняття
 function sampleData() {
   const car = { _id: "v1", brand: "Renault Logan", plateNumber: "BA1111AA" };
   const truck = { _id: "v2", brand: "MAN TGL", plateNumber: "BA2222AA" };
@@ -80,12 +78,10 @@ test("buildGroupSchedule групує курсантів за основним �
   assert.equal(model.periodLabel.from, "01 ЧЕРВНЯ 2026");
   assert.equal(model.days.length, 5);
 
-  // Обидва курсанти — на Renault (там більшість їхніх занять)
   assert.equal(model.vehicles.length, 1);
   const group = model.vehicles[0];
   assert.equal(group.vehicleLabel, "RENAULT LOGAN (BA1111AA)");
   assert.deepEqual(group.instructorNames, ["СТЕБЛОВСЬКИЙ О.І."]);
-  // Курсанти за абеткою, наскрізна нумерація
   assert.deepEqual(group.students.map((s) => [s.number, s.name]), [
     [1, "АНТОНЕНКО В."],
     [2, "БОЙКО А.О."],
@@ -96,7 +92,6 @@ test("buildGroupSchedule групує курсантів за основним �
   assert.deepEqual(boyko.cells["2026-06-02"].times, ["08 - 10"]);
 
   const antonenko = group.students[0];
-  // Заняття з "чужим" інструктором на іншому авто з причепом
   assert.deepEqual(antonenko.cells["2026-06-03"].exercises, [
     { code: "1.1 КОВА", notes: ["MAN", "(з прич.)"] },
   ]);
@@ -107,6 +102,5 @@ test("renderGroupScheduleDocx формує коректний .docx (zip-арх�
   const model = buildGroupSchedule({ group: "12", ...sampleData() });
   const buffer = await renderGroupScheduleDocx(model);
   assert.ok(buffer.length > 1000);
-  // Файли .docx — це zip: починаються з сигнатури "PK"
   assert.equal(buffer.subarray(0, 2).toString(), "PK");
 });

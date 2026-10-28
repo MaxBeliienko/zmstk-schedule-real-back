@@ -1,3 +1,7 @@
+// Заняття планового графіка, яке складає адмін: інструктор, курсант, вправа,
+// ТЗ (і причіп), дата та час. Тривалість і автодром беруться з довідника
+// вправ (models/Exercise.js).
+
 const mongoose = require("mongoose");
 
 const plannedScheduleSchema = new mongoose.Schema(
@@ -36,11 +40,12 @@ const plannedScheduleSchema = new mongoose.Schema(
 );
 
 plannedScheduleSchema.index(
+  // Кожну вправу курсант проходить у графіку лише один раз
   { studentId: 1, exerciseCode: 1 },
   { unique: true }
 );
+// Пошук занять за датою, інструктором і ТЗ (основне авто або причіп)
 plannedScheduleSchema.index({ date: 1, instructorId: 1 });
-// Звіт по ТЗ за період: ТЗ може бути основним авто або причепом
 plannedScheduleSchema.index({ vehicleId: 1, date: 1 });
 plannedScheduleSchema.index({ trailerId: 1, date: 1 });
 

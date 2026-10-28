@@ -1,3 +1,7 @@
+// Календар і нагадування (/api/reminders): картки на дату з повторенням,
+// виконавці, спливаючі сповіщення "за день / тиждень / ..." та їх
+// підтвердження. Розрахунок дат — utils/reminderOffsets.js.
+
 const express = require("express");
 const authMiddleware = require("../middlewares/authMiddleware");
 const Reminder = require("../models/Reminder");
@@ -27,15 +31,14 @@ const {
 
 const router = express.Router();
 
-// Всі маршрути нагадувань доступні лише авторизованим користувачам
 router.use(authMiddleware);
 
+// Ролі, яким можна призначити картку (крім конкретних інструкторів)
 const ASSIGNABLE_ROLES = ["admin", "accountant"];
 const MAX_RANGE_DAYS = 400;
 const REPEATING = ["daily", "weekly", "monthly", "yearly"];
 
-// Мапа "id інструктора -> ПІБ" для всіх виконавців одразу (один запит
-// замість окремого на кожну картку)
+// ПІБ інструкторів-виконавців для всіх карток одним запитом
 async function loadInstructorNames(reminders) {
   const ids = new Set();
   for (const r of reminders) {
@@ -51,13 +54,14 @@ async function loadInstructorNames(reminders) {
   return Object.fromEntries(found.map((i) => [i._id.toString(), i.fullName]));
 }
 
+// Людська назва виконавця для картки
 function assigneeName(identity, instructorsById) {
   if (identity === "role:admin") return "Адміністратор";
   if (identity === "role:accountant") return "Бухгалтер";
   return instructorsById[identity.replace("instructor:", "")] || "Інструктор";
 }
 
-// Перевіряє та нормалізує поля картки з тіла запиту
+// Поля картки з запиту. requireAll — при створенні; інакше лише передані
 async function parseReminderBody(body, { requireAll }) {
   const data = {};
 
@@ -117,6 +121,7 @@ async function parseReminderBody(body, { requireAll }) {
   return data;
 }
 
+// Картка, яку поточний користувач може змінити: лише власна і не системна
 async function loadOwnEditableReminder(req, action) {
   if (!isObjectId(req.params.id)) throw badRequest("Некоректний ID картки");
   const reminder = await Reminder.findById(req.params.id);
@@ -142,13 +147,9 @@ async function loadOwnEditableReminder(req, action) {
   return reminder;
 }
 
-// ================= КАЛЕНДАР =================
-
-// Картки на діапазон дат (де я автор або виконавець), включно з
-// авто-картками МТБ. Відповідь:
-//  - series — дані кожної картки один раз (seriesDate — дата початку серії);
-//  - occurrences — легкі події { _id, date } на кожну дату в діапазоні.
-// Так щоденна серія на рік не дублює опис картки 365 разів.
+// Картки на діапазон дат, де користувач автор або виконавець.
+// series — дані кожної картки один раз; occurrences — легкі записи { _id, date }
+// на кожну дату (щоденна серія на рік не дублює опис 365 разів)
 router.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -169,7 +170,6 @@ router.get(
         {
           $or: [
             { date: { $gte: startDate, $lte: endDate } },
-            // Повторювані серії, що почались до кінця діапазону
             { repeat: { $in: REPEATING }, date: { $lte: endDate } },
           ],
         },
@@ -210,7 +210,7 @@ router.get(
   })
 );
 
-// Список інструкторів/ролей — для вибору виконавців у формі
+// Кого можна обрати виконавцем: ролі та інструктори
 router.get(
   "/assignee-options",
   asyncHandler(async (req, res) => {
@@ -232,19 +232,13 @@ router.get(
   })
 );
 
-// ================= НАГАДУВАННЯ (CRUD) =================
-
+// Нова картка; автор — поточний користувач
 router.post(
   "/",
   asyncHandler(async (req, res) => {
     const data = await parseReminderBody(req.body, { requireAll: true });
 
-    const createdByName =
-      req.user.role === "instructor"
-        ? req.user.fullName
-        : req.user.role === "admin"
-        ? "Адміністратор"
-        : "Бухгалтер";
+    const createdByName = req.user.fullName;
 
     const reminder = await Reminder.create({
       description: "",
@@ -259,14 +253,14 @@ router.post(
   })
 );
 
+// Редагування власної картки. Якщо змінились дата чи графік показу,
+// попередні "переглянуто / відкладено" скидаються
 router.put(
   "/:id",
   asyncHandler(async (req, res) => {
     const reminder = await loadOwnEditableReminder(req, "edit");
     const data = await parseReminderBody(req.body, { requireAll: false });
 
-    // Змінився графік показу — попередні підтвердження/відкладення вже не
-    // відповідають новим датам тригерів
     const scheduleChanged =
       (data.date !== undefined && data.date !== reminder.date) ||
       (data.repeat !== undefined && data.repeat !== reminder.repeat);
@@ -279,6 +273,7 @@ router.put(
   })
 );
 
+// Видалення власної картки
 router.delete(
   "/:id",
   asyncHandler(async (req, res) => {
@@ -288,12 +283,9 @@ router.delete(
   })
 );
 
-// ================= СПЛИВАЮЧІ СПОВІЩЕННЯ =================
-
-// Нагадування, у яких настав момент "нагадати за..." і які ще не
-// підтверджені (або відкладені) поточним користувачем. Для повторюваних
-// карток кожна подія має власні дати тригерів, тож підтвердження однієї
-// події не приховує наступні.
+// Сповіщення, які треба показати зараз: настала дата "нагадати за...", і
+// користувач його ще не підтвердив і не відклав. Для повторюваних карток
+// кожна подія має свої дати, тож підтвердження однієї не ховає наступних
 router.get(
   "/due",
   asyncHandler(async (req, res) => {
@@ -304,7 +296,6 @@ router.get(
     const candidates = await Reminder.find({
       assignees: identity,
       "remindBefore.0": { $exists: true },
-      // Давно минулі разові картки відсікаємо ще в БД (повторювані — завжди)
       $or: [
         { repeat: { $in: REPEATING } },
         { date: { $gte: relevantWindow(today).from } },
@@ -321,7 +312,6 @@ router.get(
         continue;
       }
 
-      // Найпізніший тригер, що вже настав і ще не підтверджений
       let best = null;
       for (const eventDate of relevantEventDates(reminder, today)) {
         for (const td of computeTriggerDates(eventDate, reminder.remindBefore)) {
@@ -348,6 +338,7 @@ router.get(
   })
 );
 
+// Стан сповіщення поточного виконавця (створює, якщо його ще немає)
 function upsertViewerState(reminder, identity) {
   let state = reminder.viewerStates.find((v) => v.identity === identity);
   if (!state) {
@@ -361,6 +352,7 @@ function upsertViewerState(reminder, identity) {
   return state;
 }
 
+// Картка, призначена поточному користувачу, або 403/404
 async function loadAssignedReminder(req) {
   if (!isObjectId(req.params.id)) throw badRequest("Некоректний ID картки");
   const reminder = await Reminder.findById(req.params.id);
@@ -371,12 +363,13 @@ async function loadAssignedReminder(req) {
   return reminder;
 }
 
+// "Переглянуто": запам'ятовує останню підтверджену дату сповіщення.
+// Майбутню дату не приймаємо — інакше можна заглушити всю серію наперед
 router.post(
   "/:id/acknowledge",
   asyncHandler(async (req, res) => {
     const triggerDate = asString(req.body.triggerDate);
     if (!isValidDateStr(triggerDate)) throw badRequest("Не вказано triggerDate");
-    // Майбутню дату не приймаємо — інакше можна "заглушити" всю серію наперед
     if (triggerDate > todayStr()) throw badRequest("Це сповіщення ще не настало");
 
     const reminder = await loadAssignedReminder(req);
@@ -392,6 +385,7 @@ router.post(
   })
 );
 
+// "Нагадати пізніше": ховає сповіщення на годину
 router.post(
   "/:id/snooze",
   asyncHandler(async (req, res) => {

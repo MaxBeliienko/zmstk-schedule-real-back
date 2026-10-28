@@ -1,19 +1,23 @@
+// Системні нагадування про закінчення строків: страхування й техогляду ТЗ,
+// медогляду й санітарної книжки інструкторів. Створюються й оновлюються
+// автоматично після кожної зміни ТЗ (routes/vehicles.js) чи інструктора
+// (routes/instructors.js). Бачать їх адмін, бухгалтер і причетний інструктор.
+
 const Reminder = require("../models/Reminder");
 const Vehicle = require("../models/Vehicle");
 const Instructor = require("../models/Instructor");
 
-// Системні нагадування про закінчення строків: страхування й техогляду ТЗ
-// (МТБ), медогляду й санітарної книжки інструкторів. Графік сповіщень той
-// самий, що й у звичайних карток: за місяць, за два тижні, за тиждень, за день.
+// Сповіщення за місяць, два тижні, тиждень і день
 const ALL_OFFSETS = ["1_day", "1_week", "2_weeks", "1_month"];
 const SYSTEM_IDENTITY = "system";
 const SYSTEM_NAME = "Система";
 
-// Адмін і бухгалтер отримують усі системні нагадування
 const STAFF_ASSIGNEES = ["role:admin", "role:accountant"];
 
-// filter — однозначно визначає картку (тип + джерело). Без дати картку
-// прибираємо, інакше — створюємо або оновлюємо.
+// Створює або оновлює одну системну картку (filter — тип і джерело).
+// Без дати картка видаляється. Якщо дата змінилась, попередні "переглянуто /
+// відкладено" скидаються. Upsert разом з унікальним індексом не створює
+// дублів навіть при одночасних збереженнях
 async function upsertSystemReminder(filter, { date, title, extraAssignees = [] }) {
   if (!date) {
     await Reminder.deleteOne(filter);
@@ -22,13 +26,10 @@ async function upsertSystemReminder(filter, { date, title, extraAssignees = [] }
 
   const assignees = [...STAFF_ASSIGNEES, ...extraAssignees];
 
-  // Дату змінили — попередні "переглянуто / відкладено" вже не актуальні
   await Reminder.updateOne({ ...filter, date: { $ne: date } }, { $set: { viewerStates: [] } });
 
   const fields = { title, date, assignees, remindBefore: ALL_OFFSETS, repeat: "none" };
 
-  // Атомарний upsert: разом з унікальним індексом не створює дублікатів
-  // навіть при одночасних збереженнях
   await Reminder.findOneAndUpdate(
     filter,
     {
@@ -41,15 +42,12 @@ async function upsertSystemReminder(filter, { date, title, extraAssignees = [] }
     },
     { upsert: true, runValidators: true }
   ).catch((err) => {
-    // Паралельний upsert встиг першим — запис уже є, повторюємо як оновлення
     if (err?.code !== 11000) throw err;
     return Reminder.updateOne(filter, { $set: fields });
   });
 }
 
-// ================= ТЗ (МТБ) =================
-
-// Викликати після кожного створення/редагування ТЗ
+// Картки страхування й техогляду для одного ТЗ
 async function syncVehicleReminders(vehicle) {
   const label = `${vehicle.brand} (${vehicle.plateNumber})`;
   const extraAssignees = vehicle.responsibleInstructorId
@@ -67,6 +65,7 @@ async function syncVehicleReminders(vehicle) {
   );
 }
 
+// Перерахунок для всіх ТЗ (використовується в міграціях)
 async function syncAllVehicleReminders() {
   const vehicles = await Vehicle.find({});
   for (const vehicle of vehicles) {
@@ -74,10 +73,7 @@ async function syncAllVehicleReminders() {
   }
 }
 
-// ================= ІНСТРУКТОРИ =================
-
-// Викликати після зміни дат документів інструктора. Нагадування бачать
-// адмін, бухгалтер і сам інструктор.
+// Картки медогляду й санітарної книжки для одного інструктора
 async function syncInstructorReminders(instructor) {
   const source = { sourceInstructorId: instructor._id, sourceVehicleId: null };
   const extraAssignees = [`instructor:${instructor._id}`];
@@ -100,6 +96,7 @@ async function syncInstructorReminders(instructor) {
   );
 }
 
+// Перерахунок для всіх інструкторів
 async function syncAllInstructorReminders() {
   const instructors = await Instructor.find({}).select(
     "fullName medicalExamUntil sanitaryBookUntil"

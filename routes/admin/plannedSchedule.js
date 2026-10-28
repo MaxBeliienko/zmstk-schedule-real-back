@@ -1,3 +1,9 @@
+// Плановий графік (/api/admin/planned-schedule) — заняття, які планує адмін.
+// При створенні й редагуванні перевіряються конфлікти: один ТЗ / причіп,
+// курсант чи інструктор не можуть мати два заняття одночасно. Перевірка й
+// збереження виконуються під блокуванням дати (utils/keyedLock.js), щоб два
+// адміни не забронювали одне й те саме паралельно.
+
 const express = require("express");
 const Student = require("../../models/Student");
 const Instructor = require("../../models/Instructor");
@@ -34,19 +40,21 @@ const {
 
 const router = express.Router();
 
-// Весь плановий графік — лише для адміністратора
+// Увесь плановий графік — лише для адміністратора
 router.use(requireRole.admin);
 
+// Іспит — вправа з кодом "Іспит" (або назвою, що його містить)
 const EXAM_CODE = "Іспит";
 const isExamCode = (code) => code === EXAM_CODE || code.toLowerCase().includes("іспит");
 
-// Перетин інтервалів часу [startA, endA) та [startB, endB) у форматі HH:MM
+// Чи перетинаються інтервали [startA, endA) і [startB, endB) у форматі ГГ:ХХ
 const isOverlapping = (startA, endA, startB, endB) =>
   startA < endB && startB < endA;
 
+// id з документа або з уже готового id (populate чи ні)
 const idOf = (value) => (value ? (value._id || value).toString() : null);
 
-// Отримати всі вже призначені вправи курсанта (по всьому графіку)
+// Коди вправ, уже призначених курсанту (форма заняття ховає їх зі списку)
 router.get(
   "/student-schedules/:studentId",
   asyncHandler(async (req, res) => {
@@ -63,10 +71,8 @@ router.get(
   })
 );
 
-// Отримати плановий графік за діапазоном дат. Необов'язкові фільтри:
-//  - instructorId — заняття інструктора (сторінка планового графіка);
-//  - vehicleId — заняття, де цей ТЗ є основним авто АБО причепом
-//    (звіт по ТЗ за період у панелі адміна).
+// Заняття за період (обов'язково, до 62 днів). Фільтри: instructorId —
+// сторінка планового графіка; vehicleId — звіт по ТЗ (основне авто або причіп)
 router.get(
   "/planned-schedule",
   asyncHandler(async (req, res) => {
@@ -84,7 +90,6 @@ router.get(
       if (!isObjectId(vehicleId)) throw badRequest("Некоректний ID транспортного засобу");
       filter.$or = [{ vehicleId }, { trailerId: vehicleId }];
     }
-    // Діапазон обов'язковий: без нього запит віддавав усю колекцію
     const rangeError = dateRangeError(startDate, endDate, MAX_GRID_RANGE_DAYS);
     if (rangeError) throw badRequest(rangeError);
     filter.date = { $gte: startDate, $lte: endDate };
@@ -101,9 +106,9 @@ router.get(
   })
 );
 
-// Перевіряє конфлікти бронювання (ТЗ / причіп / курсант / інструктор) на
-// певну дату. excludeId — поточний запис при редагуванні. Повертає текст
-// помилки або null.
+// Шукає конфлікт на дату: зайнятий ТЗ або причіп (вони з одного пулу),
+// курсант чи інструктор у той самий час. excludeId — заняття, що редагується.
+// Повертає текст помилки або null
 async function findConflict({
   date,
   startTime,
@@ -129,8 +134,6 @@ async function findConflict({
 
     const time = `${slot.startTime}-${slot.endTime}`;
     const who = slot.instructorId?.fullName || "—";
-    // ТЗ і причіп — з одного пулу транспорту: причіп не може бути
-    // одночасно в двох заняттях, як і авто
     const busyTransport = [idOf(slot.vehicleId), idOf(slot.trailerId)];
 
     if (vehicleId && busyTransport.includes(vehicleId)) {
@@ -152,9 +155,8 @@ async function findConflict({
   return null;
 }
 
-// Збирає і перевіряє повний запис заняття. Тривалість, автодром і час
-// завершення беремо з довідника вправ (а не з клієнта), щоб у графік не
-// потрапили некоректні години.
+// Перевіряє вхідні дані й збирає повний запис заняття. Тривалість, автодром
+// і час завершення беруться з довідника вправ, а не від клієнта
 async function buildSlot(input) {
   const instructorId = asString(input.instructorId);
   const studentId = asString(input.studentId);
@@ -226,6 +228,7 @@ async function buildSlot(input) {
   };
 }
 
+// Кидає 409, якщо курсант уже має цю вправу або є конфлікт за часом
 async function assertNoConflicts(slot, excludeId) {
   const duplicateExercise = await PlannedSchedule.exists({
     studentId: slot.studentId,
@@ -240,8 +243,7 @@ async function assertNoConflicts(slot, excludeId) {
   if (message) throw conflict(message);
 }
 
-// Дубль вправи, який "проскочив" попередню перевірку, відловить унікальний
-// індекс — перетворюємо його на зрозуміле повідомлення
+// Дубль вправи, що "проскочив" перевірку, ловить унікальний індекс — перетворюємо на зрозуміле 409
 function rethrowDuplicate(err, exerciseCode) {
   if (err?.code === 11000) {
     throw conflict(`Курсант вже має вправу "${exerciseCode}" у плановому графіку!`);
@@ -249,7 +251,7 @@ function rethrowDuplicate(err, exerciseCode) {
   throw err;
 }
 
-// Додати заняття
+// Нове заняття: перевірка конфліктів і збереження під блокуванням дати
 router.post(
   "/planned-schedule",
   asyncHandler(async (req, res) => {
@@ -266,7 +268,7 @@ router.post(
   })
 );
 
-// Редагувати заняття
+// Редагування заняття. Блокуються і стара, і нова дата (якщо заняття переносять)
 router.put(
   "/planned-schedule/:id",
   asyncHandler(async (req, res) => {
@@ -276,7 +278,7 @@ router.put(
     const existing = await PlannedSchedule.findById(id).lean();
     if (!existing) throw notFound("Запис не знайдено");
 
-    // Непередані поля беремо з наявного запису
+    // Поля, яких немає в запиті, беремо з наявного заняття
     const merged = {
       instructorId: idOf(existing.instructorId),
       studentId: idOf(existing.studentId),
@@ -310,7 +312,7 @@ router.put(
   })
 );
 
-// Видалити заняття
+// Видалення заняття
 router.delete(
   "/planned-schedule/:id",
   asyncHandler(async (req, res) => {
@@ -321,7 +323,8 @@ router.delete(
   })
 );
 
-// Вільні курсанти та ТЗ на заданий інтервал часу
+// Вільні курсанти ("Практика", без архіву) і ТЗ на заданий інтервал часу —
+// для списків вибору у формі заняття
 router.get(
   "/planned-schedule/available-resources",
   asyncHandler(async (req, res) => {
@@ -336,7 +339,6 @@ router.get(
       throw badRequest("Обов'язкові параметри: date, startTime, endTime (ГГ:ХХ)");
     }
 
-    // 1. Зайняті курсанти й транспорт на цей час
     const daySchedules = await PlannedSchedule.find({ date }).lean();
     const occupiedStudentIds = new Set();
     const occupiedVehicleIds = new Set();
@@ -349,12 +351,10 @@ router.get(
       if (slot.trailerId) occupiedVehicleIds.add(slot.trailerId.toString());
     }
 
-    // 2. Курсанти лише напрямку "Практика"
     const studentFilter = {
       _id: { $nin: [...occupiedStudentIds] },
       studyType: "Практика",
     };
-    // Архівних (завершили навчання > 6 міс. тому) відсікаємо ще в БД
     if (!includeArchive) studentFilter.endDate = { $gte: addMonths(date, -6) };
     if (category) studentFilter.category = category;
 
@@ -367,7 +367,6 @@ router.get(
       .filter((s) => includeArchive || s.status !== "Архів")
       .sort(compareByStatusThenName);
 
-    // 3. Вільний транспорт
     const vehicleFilter = { _id: { $nin: [...occupiedVehicleIds] } };
     if (category) vehicleFilter.category = { $in: [category] };
     const vehicles = await Vehicle.find(vehicleFilter).lean();

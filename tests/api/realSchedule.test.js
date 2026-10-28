@@ -1,3 +1,6 @@
+// Інтеграційні тести реального графіка: збереження дня інструктора,
+// конфлікти авто й курсантів, права та обмеження за датою.
+
 const { describe, test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const h = require("../helpers");
@@ -17,8 +20,8 @@ describe("Реальний графік інструктора", () => {
     await h.clearDb();
     ins1 = await h.createInstructor("Іваненко І.І.", "111111");
     ins2 = await h.createInstructor("Коваль П.П.", "222222");
-    token1 = (await h.instructorLogin("Іваненко І.І.", "111111")).body.token;
-    token2 = (await h.instructorLogin("Коваль П.П.", "222222")).body.token;
+    token1 = (await h.login("111111")).body.token;
+    token2 = (await h.login("222222")).body.token;
     car = await h.createVehicle();
   });
 

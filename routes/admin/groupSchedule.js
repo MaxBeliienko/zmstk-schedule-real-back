@@ -1,3 +1,6 @@
+// Word-документ "Графік черговості навчання водінню" для групи (лише адмін).
+// Дані збирає utils/groupSchedule.js, файл .docx будує utils/groupScheduleDocx.js.
+
 const express = require("express");
 const Student = require("../../models/Student");
 const PlannedSchedule = require("../../models/PlannedSchedule");
@@ -8,9 +11,8 @@ const { asyncHandler, badRequest, notFound, escapeRegex, asString } = require(".
 
 const router = express.Router();
 
-// Графік черговості навчання водінню групи (Word) — лише адмін.
-// Курсанти групи напрямку "Практика" (і ті, в кого вже є заняття в
-// плановому графіку) та всі їхні заплановані заняття.
+// Повертає файл .docx для групи з ?group=. У графік потрапляють курсанти
+// "Практика" та всі, хто вже має заняття в плановому графіку
 router.get(
   "/group-schedule/document",
   requireRole.admin,
@@ -19,7 +21,7 @@ router.get(
     if (!group) throw badRequest("Вкажіть номер групи");
     if (group.length > 50) throw badRequest("Некоректний номер групи");
 
-    // Пробіли навколо номера в старих записах не заважають знайти групу
+    // Пробіли навколо номера групи в старих записах не заважають пошуку
     const groupStudents = await Student.find({
       group: { $regex: `^\\s*${escapeRegex(group)}\\s*$` },
     })

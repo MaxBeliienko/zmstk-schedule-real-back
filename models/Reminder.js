@@ -1,8 +1,14 @@
+// Картка календаря (нагадування). Буває двох видів:
+//  - звичайна — створює користувач (routes/reminders.js);
+//  - системна — створюється автоматично зі строків документів ТЗ та
+//    інструкторів (sourceType, utils/systemReminderSync.js).
+// Виконавці (assignees) — "role:admin", "role:accountant" або "instructor:<id>".
+
 const mongoose = require("mongoose");
 
+// Стан сповіщення для одного виконавця: що вже переглянуто і до якого часу відкладено
 const viewerStateSchema = new mongoose.Schema(
   {
-    // "role:admin" | "role:accountant" | "instructor:<id>"
     identity: { type: String, required: true },
     lastAcknowledgedTriggerDate: { type: String, default: "" },
     snoozeUntil: { type: Date, default: null },
@@ -15,6 +21,7 @@ const reminderSchema = new mongoose.Schema(
     title: { type: String, required: true },
     description: { type: String, default: "" },
     date: { type: String, required: true },
+    // За скільки до дати показати сповіщення
     remindBefore: [
       {
         type: String,
@@ -33,6 +40,7 @@ const reminderSchema = new mongoose.Schema(
     createdByName: { type: String, required: true },
     viewerStates: [viewerStateSchema],
 
+    // Джерело системної картки (null — звичайна картка)
     sourceType: {
       type: String,
       enum: [
@@ -60,9 +68,8 @@ const reminderSchema = new mongoose.Schema(
 
 reminderSchema.index({ assignees: 1 });
 reminderSchema.index({ createdByIdentity: 1 });
-// Одна системна картка на тип і джерело (ТЗ або інструктора). Попередній
-// індекс system_card_unique (лише ТЗ) прибирає міграція
 reminderSchema.index(
+  // Одна системна картка на тип і джерело (ТЗ або інструктора)
   { sourceType: 1, sourceVehicleId: 1, sourceInstructorId: 1 },
   {
     name: "system_card_unique_v2",

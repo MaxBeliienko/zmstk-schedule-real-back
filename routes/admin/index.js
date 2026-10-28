@@ -1,8 +1,9 @@
+// Маршрути /api/admin/*: курсанти, довідник вправ, плановий графік і Word-графік групи.
+// Усі вимагають входу; права конкретних ролей перевіряє кожен модуль.
+
 const express = require("express");
 const authMiddleware = require("../../middlewares/authMiddleware");
 
-// Усі маршрути /api/admin/* вимагають авторизації; права конкретних ролей
-// перевіряються всередині кожного модуля.
 const router = express.Router();
 
 router.use(authMiddleware);

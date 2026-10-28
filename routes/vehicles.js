@@ -1,9 +1,13 @@
+// Транспортні засоби (/api/vehicles) — розділ МТБ. Після кожної зміни
+// оновлюються автоматичні нагадування про страхування й техогляд.
+
 const express = require("express");
 const Vehicle = require("../models/Vehicle");
 const Instructor = require("../models/Instructor");
 const authMiddleware = require("../middlewares/authMiddleware");
 const requireRole = require("../middlewares/requireRole");
 const { syncVehicleReminders } = require("../utils/systemReminderSync");
+const { withTransaction } = require("../utils/transaction");
 const { isValidDateStr } = require("../utils/dates");
 const {
   asyncHandler,
@@ -19,8 +23,7 @@ const { DRIVING_CATEGORIES: ALLOWED_CATEGORIES } = require("../config/categories
 
 router.use(authMiddleware);
 
-// Список ТЗ потрібен усім авторизованим ролям (кабінет інструктора,
-// плановий графік, МТБ)
+// Список ТЗ потрібен усім ролям (кабінет інструктора, плановий графік, МТБ)
 router.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -32,8 +35,7 @@ router.get(
   })
 );
 
-// Перевіряє і нормалізує поля ТЗ з тіла запиту. Повертає лише ті поля,
-// що були передані (для часткового оновлення).
+// Перевіряє поля ТЗ з запиту. requireAll — при створенні; інакше лише передані поля
 async function parseVehicleBody(body, { requireAll }) {
   const data = {};
 
@@ -86,7 +88,7 @@ async function parseVehicleBody(body, { requireAll }) {
   return data;
 }
 
-// Створення нового ТЗ (адмін або бухгалтер) — картка МТБ
+// Новий ТЗ (адмін, бухгалтер)
 router.post(
   "/",
   requireRole.staff,
@@ -98,13 +100,15 @@ router.post(
       responsibleAssignedAt: data.responsibleInstructorId ? new Date() : null,
     });
 
-    await vehicle.save();
-    await syncVehicleReminders(vehicle);
+    await withTransaction(async () => {
+      await vehicle.save();
+      await syncVehicleReminders(vehicle);
+    });
     res.status(201).json({ success: true, vehicle });
   })
 );
 
-// Редагування ТЗ, зокрема полів МТБ (адмін або бухгалтер)
+// Редагування ТЗ (адмін, бухгалтер)
 router.put(
   "/:id",
   requireRole.staff,
@@ -116,12 +120,12 @@ router.put(
 
     const data = await parseVehicleBody(req.body, { requireAll: false });
 
+    // Дату призначення оновлюємо лише при зміні відповідального: від неї
+    // залежить, яке авто інструктора основне
     if (data.responsibleInstructorId !== undefined) {
       const changed =
         String(vehicle.responsibleInstructorId || "") !==
         String(data.responsibleInstructorId || "");
-      // Оновлюємо момент призначення лише коли відповідальний ДІЙСНО змінився —
-      // це визначає, яке авто "перше" (основне), якщо за інструктором закріплено декілька
       if (changed) {
         vehicle.responsibleAssignedAt = data.responsibleInstructorId
           ? new Date()
@@ -130,8 +134,11 @@ router.put(
     }
 
     vehicle.set(data);
-    await vehicle.save();
-    await syncVehicleReminders(vehicle);
+    // ТЗ і його нагадування про страхування й техогляд — разом або нічого
+    await withTransaction(async () => {
+      await vehicle.save();
+      await syncVehicleReminders(vehicle);
+    });
     res.status(200).json({ success: true, vehicle });
   })
 );

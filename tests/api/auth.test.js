@@ -1,89 +1,106 @@
+// Інтеграційні тести входу за паролем: визначення ролі, блокування акаунта,
+// старі PIN, ліміт спроб з IP, захист від підроблених токенів та ін'єкцій.
+
 const { describe, test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const bcrypt = require("bcryptjs");
 const h = require("../helpers");
+const Account = require("../../models/Account");
+const Instructor = require("../../models/Instructor");
 
-describe("Авторизація", () => {
+describe("Авторизація: вхід лише за паролем", () => {
   before(h.startDb);
   after(h.stopDb);
   beforeEach(h.clearDb);
 
-  test("вхід адміна й бухгалтера: роль визначається паролем", async () => {
-    for (const [password, role] of [
-      ["admin-pass", "admin"],
-      ["accountant-pass", "accountant"],
-    ]) {
-      const res = await h
-        .api()
-        .post("/api/auth/staff-login")
-        .set("X-Forwarded-For", h.nextIp())
-        .send({ password });
-      assert.equal(res.status, 200);
-      assert.equal(res.body.user.role, role);
-      assert.ok(res.body.token);
-    }
+  test("роль визначається за паролем: адмін, бухгалтер, інструктор", async () => {
+    await h.createAccount({ role: "admin", fullName: "Адмін" }, "admin-pass-1");
+    await h.createAccount({ role: "accountant", fullName: "Бухгалтер" }, "acc-pass-1");
+    const instructor = await h.createInstructor("Іваненко І.І.", "instr-pass-1");
+
+    const admin = await h.login("admin-pass-1");
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.user.role, "admin");
+
+    const accountant = await h.login("acc-pass-1");
+    assert.equal(accountant.body.user.role, "accountant");
+
+    const ins = await h.login("instr-pass-1");
+    assert.equal(ins.body.user.role, "instructor");
+    assert.equal(ins.body.user.id, instructor._id.toString());
+
+    const me = await h.api().get("/api/auth/me").set(h.auth(ins.body.token));
+    assert.equal(me.status, 200);
+    assert.equal(me.body.user.fullName, "Іваненко І.І.");
   });
 
-  test("невірний пароль персоналу — 401", async () => {
-    const res = await h
-      .api()
-      .post("/api/auth/staff-login")
-      .set("X-Forwarded-For", h.nextIp())
-      .send({ password: "wrong" });
+  test("невірний пароль — 401", async () => {
+    const res = await h.login("wrong-password");
     assert.equal(res.status, 401);
   });
 
-  test("вхід інструктора за ПІБ і PIN; PIN зберігається лише як хеш", async () => {
-    const instructor = await h.createInstructor("Іваненко І.І.", "123456");
-    assert.match(instructor.pinCode, /^\$2[aby]\$/);
+  test("заблокований обліковий запис не входить і втрачає сесії", async () => {
+    const account = await h.createAccount({ role: "accountant", fullName: "Бухгалтер" }, "acc-pass-1");
+    const session = await h.login("acc-pass-1");
+    assert.equal(session.status, 200);
 
-    const ok = await h.instructorLogin("Іваненко І.І.", "123456");
-    assert.equal(ok.status, 200);
-    assert.equal(ok.body.user.role, "instructor");
-
-    const me = await h.api().get("/api/auth/me").set(h.auth(ok.body.token));
-    assert.equal(me.status, 200);
-    assert.equal(me.body.user.fullName, "Іваненко І.І.");
-
-    const bad = await h.instructorLogin("Іваненко І.І.", "000000");
-    assert.equal(bad.status, 401);
+    await Account.updateOne({ _id: account._id }, { $set: { isActive: false } });
+    assert.equal((await h.login("acc-pass-1")).status, 403);
+    const me = await h.api().get("/api/auth/me").set(h.auth(session.body.token));
+    assert.equal(me.status, 401);
   });
 
-  test("після 5 невдалих спроб вхід блокується лише для цієї IP", async () => {
-    await h.createInstructor("Іваненко І.І.", "123456");
+  test("старий 6-значний PIN інструктора (bcrypt) діє і переводиться на новий ключ", async () => {
+    const instructor = await Instructor.create({ fullName: "Коваль П.П." });
+    await Account.create({
+      role: "instructor",
+      fullName: "Коваль П.П.",
+      instructorId: instructor._id,
+      legacyPinHash: await bcrypt.hash("123456", 4),
+    });
+
+    const res = await h.login("123456");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.user.id, instructor._id.toString());
+
+    const stored = await Account.findOne({ instructorId: instructor._id }).select(
+      "+passwordKey +legacyPinHash"
+    );
+    assert.equal(stored.legacyPinHash, null);
+    assert.ok(stored.passwordKey);
+    assert.equal((await h.login("123456")).status, 200);
+  });
+
+  test("після 10 невдалих спроб вхід з цієї IP блокується, з іншої — ні", async () => {
+    await h.createInstructor("Іваненко І.І.", "right-pass-1");
     const attackerIp = h.nextIp();
 
-    for (let i = 1; i <= 4; i += 1) {
-      const res = await h.instructorLogin("Іваненко І.І.", "000000", attackerIp);
-      assert.equal(res.status, 401, `спроба ${i}`);
+    for (let i = 1; i <= 9; i += 1) {
+      assert.equal((await h.login(`wrong-${i}`, attackerIp)).status, 401, `спроба ${i}`);
     }
-    const fifth = await h.instructorLogin("Іваненко І.І.", "000000", attackerIp);
-    assert.equal(fifth.status, 429);
-
-    // Навіть правильний PIN з цієї IP тепер не приймається
-    const blocked = await h.instructorLogin("Іваненко І.І.", "123456", attackerIp);
-    assert.equal(blocked.status, 429);
-
-    // А сам інструктор з іншої мережі входить як завжди
-    const owner = await h.instructorLogin("Іваненко І.І.", "123456");
-    assert.equal(owner.status, 200);
+    assert.equal((await h.login("wrong-10", attackerIp)).status, 429);
+    assert.equal((await h.login("right-pass-1", attackerIp)).status, 429);
+    assert.equal((await h.login("right-pass-1")).status, 200);
   });
 
   test("запити без токена або з підробленим токеном — 401", async () => {
-    const none = await h.api().get("/api/vehicles");
-    assert.equal(none.status, 401);
-
+    assert.equal((await h.api().get("/api/vehicles")).status, 401);
     const fake = await h.api().get("/api/vehicles").set(h.auth("abc.def.ghi"));
     assert.equal(fake.status, 401);
   });
 
-  test("NoSQL-ін'єкція в полі входу не спрацьовує", async () => {
-    await h.createInstructor("Іваненко І.І.", "123456");
-    // Без санітизації { $ne: "" } знайшов би будь-якого інструктора
+  test("NoSQL-ін'єкція в полі пароля не спрацьовує", async () => {
+    await h.createInstructor();
     const res = await h
       .api()
-      .post("/api/auth/instructor-login")
+      .post("/api/auth/login")
       .set("X-Forwarded-For", h.nextIp())
-      .send({ fullName: { $ne: "" }, pinCode: "123456" });
+      .send({ password: { $ne: "" } });
     assert.equal(res.status, 400);
+  });
+
+  test("список інструкторів недоступний без входу", async () => {
+    await h.createInstructor();
+    assert.equal((await h.api().get("/api/instructors")).status, 401);
   });
 });

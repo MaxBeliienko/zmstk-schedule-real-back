@@ -1,3 +1,5 @@
+// Модульні тести utils/reminderOffsets.js: дати сповіщень і повторюваних карток.
+
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -12,7 +14,6 @@ test("дати тригерів «нагадати за…» рахуються 
     computeTriggerDates("2026-06-15", ["1_day", "1_week", "2_weeks", "1_month"]),
     ["2026-06-14", "2026-06-08", "2026-06-01", "2026-05-16"]
   );
-  // Невідомі значення ігноруються
   assert.deepEqual(computeTriggerDates("2026-06-15", ["5_years", "1_day"]), ["2026-06-14"]);
 });
 

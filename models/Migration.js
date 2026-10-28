@@ -1,6 +1,7 @@
+// Журнал виконаних міграцій даних (migrations/index.js): _id = назва міграції.
+
 const mongoose = require("mongoose");
 
-// Журнал виконаних міграцій (одноразових змін даних при старті сервера)
 const migrationSchema = new mongoose.Schema(
   {
     _id: { type: String },

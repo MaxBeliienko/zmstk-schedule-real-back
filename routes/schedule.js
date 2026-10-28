@@ -1,3 +1,7 @@
+// Реальний графік (/api/schedule): що інструктор робив у кожну годину дня.
+// Інструктор заповнює свій день у кабінеті; адмін і бухгалтер переглядають
+// зведені таблиці (адмін також може редагувати).
+
 const express = require("express");
 const Schedule = require("../models/Schedule");
 const Instructor = require("../models/Instructor");
@@ -15,6 +19,7 @@ const {
   dateRangeError,
 } = require("../utils/dates");
 const { withLock } = require("../utils/keyedLock");
+const { withTransaction } = require("../utils/transaction");
 const {
   asyncHandler,
   badRequest,
@@ -29,18 +34,18 @@ const router = express.Router();
 
 router.use(authMiddleware);
 
-// Нормалізує ПІБ для порівняння (регістр і зайві пробіли не мають значення)
+// ПІБ для порівняння: регістр і зайві пробіли не мають значення
 const normalizeName = (name) =>
   name.trim().replace(/\s+/g, " ").toLocaleLowerCase("uk");
 
-// Інструктор працює лише зі своїм графіком; адмін/бухгалтер — з будь-яким
+// Інструктор працює лише зі своїм графіком; персонал — з будь-яким
 function assertCanAccessInstructor(user, instructorId) {
   if (user.role === "instructor" && user.id !== instructorId) {
     throw forbidden("Можна працювати лише з власним графіком");
   }
 }
 
-// Графік одного інструктора на день (повна сітка слотів)
+// День одного інструктора: повна сітка годин (порожні — з пустими полями)
 router.get(
   "/instructor-day",
   requireRole("instructor", "admin", "accountant"),
@@ -99,7 +104,7 @@ router.get(
   })
 );
 
-// Графік одного інструктора за період
+// Графік одного інструктора за період (до 62 днів)
 router.get(
   "/admin-instructor-period",
   requireRole.staff,
@@ -123,7 +128,8 @@ router.get(
   })
 );
 
-// Перетворює слот із запиту на нормалізований вигляд (або кидає 400)
+// Перевіряє й нормалізує один рядок графіка з запиту (або кидає 400).
+// У "гаражі" курсант і місце не зберігаються
 function normalizeSlot(raw) {
   const timeSlot = asString(raw?.timeSlot);
   if (!REAL_TIME_SLOTS.includes(timeSlot)) {
@@ -151,7 +157,9 @@ function normalizeSlot(raw) {
   };
 }
 
-// Збереження графіка інструктора на день
+// Збереження дня інструктора. Перевіряє, що авто й курсант у цю годину не
+// зайняті в іншого інструктора; перевірка й запис — під блокуванням дати.
+// Інструктор може редагувати не раніше ніж INSTRUCTOR_EDIT_DAYS_BACK днів тому
 router.post(
   "/save",
   requireRole("instructor", "admin"),
@@ -168,7 +176,6 @@ router.post(
     }
     assertCanAccessInstructor(req.user, instructorId);
 
-    // Та сама межа, що й у календарі кабінету: не раніше ніж позавчора
     if (req.user.role === "instructor") {
       const minDate = addDays(todayKyiv(), -INSTRUCTOR_EDIT_DAYS_BACK);
       if (date < minDate) {
@@ -184,9 +191,6 @@ router.post(
       throw badRequest("Слоти в запиті повторюються");
     }
 
-    // Перевірка конфліктів і збереження — атомарно відносно інших
-    // збережень на цю ж дату (інакше два інструктори могли б одночасно
-    // забронювати одне авто)
     await withLock(`real:${date}`, async () => {
       const others = await Schedule.find({
         date,
@@ -251,9 +255,8 @@ router.post(
       });
 
       if (operations.length > 0) {
-        await Schedule.bulkWrite(operations).catch((err) => {
-          // Спрацював унікальний індекс "одне авто на слот" — паралельне
-          // збереження іншого інструктора встигло раніше
+        // Усі години дня зберігаються разом: якщо одна не пройде, не зміниться жодна
+        await withTransaction(() => Schedule.bulkWrite(operations)).catch((err) => {
           if (err?.code === 11000) {
             throw conflict(
               "Авто щойно забронював інший інструктор. Оновіть сторінку й спробуйте ще раз."

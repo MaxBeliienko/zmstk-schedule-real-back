@@ -1,5 +1,13 @@
-// Категорії посвідчень водія, з якими працює автошкола (ТЗ, інструктори).
-// Має збігатися з DRIVING_CATEGORIES у фронтенді (src/config/categories.js).
+// Категорії посвідчень водія і напрямки навчання. Фронтенд отримує ці значення
+// з GET /api/config (routes/config.js), тож змінювати їх потрібно лише тут.
+
+// Усі категорії, з якими працює автошкола (ТЗ, інструктори, курсанти)
 const DRIVING_CATEGORIES = ["A1", "A", "B", "C", "C1", "CE", "D1", "D"];
 
-module.exports = { DRIVING_CATEGORIES };
+// Категорії, доступні для курсу допідготовки
+const PREP_CATEGORIES = ["A1", "A", "B", "C1", "C", "D1"];
+
+// Напрямки навчання курсанта: у плановий графік потрапляє лише "Практика"
+const STUDY_TYPES = ["Теорія", "Практика"];
+
+module.exports = { DRIVING_CATEGORIES, PREP_CATEGORIES, STUDY_TYPES };
